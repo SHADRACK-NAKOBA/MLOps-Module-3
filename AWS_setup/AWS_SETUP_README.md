@@ -309,6 +309,49 @@ SSH to EC2 → `cd /opt/m3 && pip install streamlit && streamlit run app.py`. Po
 
 **Forgetting to destroy is the #1 cost mistake.** Destroy the stack the moment class ends.
 
+### ⚠️ Two pre-flight steps you MUST do before `delete-stack`
+
+CloudFormation will refuse to delete resources that have dependencies it doesn't know about. Two things you may have created **outside** the stack will block the teardown if you skip them:
+
+**1. Delete any SageMaker Notebook Instances you created manually.** If you launched a notebook in the AWS Console for Labs C / D, it attached an ENI to the stack's subnet + security group. CloudFormation can't delete the subnet/SG while that ENI exists — and CFN doesn't know about your notebook because you created it manually.
+
+   ```bash
+   # List your notebooks; copy the name of any matching this stack
+   aws sagemaker list-notebook-instances --region ap-south-1 \
+       --query "NotebookInstances[*].[NotebookInstanceName,NotebookInstanceStatus]" --output table
+
+   # Delete each one (the notebook must be Stopped first; AWS auto-stops on delete request after a wait)
+   aws sagemaker stop-notebook-instance --notebook-instance-name <name> --region ap-south-1   # if Running
+   aws sagemaker wait notebook-instance-stopped --notebook-instance-name <name> --region ap-south-1
+   aws sagemaker delete-notebook-instance --notebook-instance-name <name> --region ap-south-1
+
+   # Wait until fully gone (~3 min) before continuing — this releases the ENI
+   until ! aws sagemaker describe-notebook-instance --notebook-instance-name <name> --region ap-south-1 >/dev/null 2>&1; do sleep 15; done
+   ```
+
+**2. Empty the S3 bucket if you uploaded anything beyond the 7 CSVs.** The stack's bucket has Versioning ON. If MLflow logged any artifacts, or if you saved trained models or feature snapshots, those are versioned objects that CloudFormation will NOT delete on its own — the stack delete will fail with `BucketNotEmpty`.
+
+   ```bash
+   # Get the bucket name from stack outputs (do this BEFORE deleting the stack)
+   BUCKET=$(aws cloudformation describe-stacks --stack-name m3-stack --region ap-south-1 \
+       --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" --output text)
+
+   # Delete all current objects
+   aws s3 rm "s3://$BUCKET" --recursive --region ap-south-1
+
+   # Also wipe every prior version + delete markers (only needed if you added artifacts after deploy)
+   aws s3api delete-objects --bucket "$BUCKET" --region ap-south-1 \
+       --delete "$(aws s3api list-object-versions --bucket "$BUCKET" --region ap-south-1 \
+           --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json)" 2>/dev/null || true
+   aws s3api delete-objects --bucket "$BUCKET" --region ap-south-1 \
+       --delete "$(aws s3api list-object-versions --bucket "$BUCKET" --region ap-south-1 \
+           --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json)" 2>/dev/null || true
+   ```
+
+> If you only uploaded the original 7 CSVs and never ran MLflow / saved models, you can skip step 2 — `cloudformation delete-stack` will handle the original-CSV cleanup. But it's safer to always run it.
+
+### Now run the actual teardown
+
 ```bash
 aws cloudformation delete-stack --stack-name m3-stack --region ap-south-1
 aws cloudformation wait stack-delete-complete --stack-name m3-stack --region ap-south-1
@@ -317,7 +360,18 @@ aws cloudformation wait stack-delete-complete --stack-name m3-stack --region ap-
 rm -f mlops-m3-batch-2026-key.pem
 ```
 
-Takes 5–10 min. The S3 bucket is auto-deleted (versioned objects too). Verify in AWS Console nothing remains.
+Takes 5–10 min. Verify in AWS Console nothing remains under CloudFormation → Stacks (set "View nested" on, "Filter status" to "Any status").
+
+### If the stack ends up in DELETE_FAILED
+
+Most commonly: you skipped pre-flight step 1 (SageMaker notebook still around) or step 2 (bucket has artifacts). Look at `describe-stack-events` for the specific failure reason:
+
+```bash
+aws cloudformation describe-stack-events --stack-name m3-stack --region ap-south-1 \
+    --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceStatusReason]" --output json
+```
+
+Fix the blocker (delete the notebook / empty the bucket), then retry `delete-stack`. CloudFormation is idempotent — it picks up where it left off.
 
 ---
 
