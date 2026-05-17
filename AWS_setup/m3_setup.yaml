@@ -1,0 +1,627 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Module 3 — First Cloud Deployment + Cloud ML Development.
+  Provisions: VPC + subnets, EC2 (with Python 3.12, Docker, AWS CLI, MLflow auto-installed),
+  RDS PostgreSQL 15 (truck_delay_db pre-created), S3 bucket, SageMaker IAM role,
+  EC2 key pair (private key in SSM Parameter Store), RDS master password in Secrets Manager.
+
+# =====================================================================
+#  PARAMETERS — change these BEFORE deployment (see AWS_SETUP_README.md)
+# =====================================================================
+Parameters:
+
+  # ── Identity ──
+  ProjectName:
+    Type: String
+    Default: mlops-m3-batch-2026
+    Description: >
+      Unique prefix for all resources. MUST be different per learner / per batch.
+      Used in: EC2 name, RDS identifier, S3 bucket, SageMaker role, key pair, etc.
+    AllowedPattern: ^[a-z][a-z0-9-]{2,30}$
+    ConstraintDescription: >
+      Lowercase letters, digits, hyphens only. 3-31 chars. Must start with a letter.
+
+  AllowedSshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR range allowed to SSH into EC2. Default 0.0.0.0/0 = OPEN TO INTERNET.
+      For production/private setups, set to YOUR_IP/32 (find via https://checkip.amazonaws.com).
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+
+  # ── EC2 settings ──
+  Ec2InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t2.micro   # Free Tier (1 vCPU, 1 GB RAM)
+      - t2.small   # Paid (1 vCPU, 2 GB RAM)
+      - t2.medium  # Paid (2 vCPU, 4 GB RAM)
+      - t3.micro   # Newer gen, Free Tier
+      - t3.small
+      - t3.medium
+    Description: >
+      EC2 instance type. Default t3.medium (2 vCPU, 4 GB RAM, ~$0.04/hr in
+      ap-south-1). NOT Free Tier — but t3.micro/t2.micro OOM during MLflow +
+      numpy/pandas install. Drop to t3.micro only if you absolutely need Free Tier
+      AND accept 10-15 min bootstrap with occasional OOM failures.
+
+  Ec2VolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    MaxValue: 100
+    Description: EBS root volume size in GB. Free Tier allows up to 30 GB.
+
+  LatestUbuntuAmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0c54f8b78468b2ba2
+    Description: >
+      Ubuntu 24.04 LTS (Noble Numbat) AMI ID. The default value is a known-good
+      24.04 LTS image in ap-south-1 (Mumbai), but it may be a few weeks behind
+      Canonical's latest patched version.
+
+      deploy_m3.sh ALWAYS overrides this with the latest Ubuntu 24.04 LTS AMI
+      for whatever region you deploy into — that's the recommended path.
+
+      If you run `aws cloudformation deploy` directly (not via the script), and
+      your region isn't ap-south-1, look up the current 24.04 AMI for your
+      region:
+
+        aws ec2 describe-images --region <your-region> --owners 099720109477 \
+            --filters Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-* \
+                      Name=state,Values=available \
+            --query "sort_by(Images, &CreationDate) | [-1].ImageId" --output text
+
+      Canonical's AWS account ID (099720109477) is the official publisher of
+      Ubuntu AMIs. Anything else is unofficial — don't use it.
+
+  # ── RDS settings ──
+  RdsInstanceClass:
+    Type: String
+    Default: db.t3.small
+    AllowedValues:
+      - db.t3.micro   # Free Tier (2 vCPU, 1 GB RAM) — tight on RAM for the 2.6M-row traffic_table
+      - db.t3.small   # 2 vCPU, 2 GB RAM — recommended default for M3 workload
+      - db.t4g.micro  # Graviton, Free Tier
+      - db.t4g.small  # Graviton, 2 GB RAM
+    Description: >
+      RDS instance class. Default db.t3.small (2 vCPU, 2 GB RAM, ~$0.036/hr in
+      ap-south-1). NOT Free Tier — but db.t3.micro's 1 GB RAM is tight for the
+      2.6M-row traffic_table COPY and EDA queries in Labs C/D. Drop to db.t3.micro
+      only if you need Free Tier and accept slower analytical queries.
+
+  RdsAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: RDS allocated storage in GB. Free Tier allows up to 20 GB.
+
+  RdsEngineVersion:
+    Type: String
+    Default: '15.10'
+    AllowedValues: ['16.6', '15.18', '15.17', '15.16', '15.10']
+    Description: PostgreSQL engine version.
+
+  RdsDatabaseName:
+    Type: String
+    Default: truck_delay_db
+    Description: Initial database name created in RDS (the Truck Delay 7 tables go here).
+    AllowedPattern: ^[a-zA-Z][a-zA-Z0-9_]{0,62}$
+
+  RdsMasterUsername:
+    Type: String
+    Default: mlops_admin
+    Description: RDS master username (password is auto-generated in Secrets Manager).
+    AllowedPattern: ^[a-zA-Z][a-zA-Z0-9_]{0,15}$
+
+  # ── Alerts (optional) ──
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: >
+      Email for billing alerts (optional). Leave empty to skip SNS topic.
+      You will receive an SNS subscription confirmation email after deployment.
+    AllowedPattern: ^$|^[^\s@]+@[^\s@]+\.[^\s@]+$
+
+  BillingAlertThresholdUsd:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: Billing alert threshold in USD. Triggers SNS when monthly spend exceeds this.
+
+# =====================================================================
+#  CONDITIONS
+# =====================================================================
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  IsBillingRegion: !Equals [!Ref 'AWS::Region', 'us-east-1']
+  CreateBillingAlarm: !And [!Condition HasAlertEmail, !Condition IsBillingRegion]
+
+
+# =====================================================================
+#  RESOURCES
+# =====================================================================
+Resources:
+
+  # ─────────────────────────────────────────────────────────────────
+  #  NETWORKING — VPC, 2 subnets across 2 AZs, IGW, route table
+  # ─────────────────────────────────────────────────────────────────
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-a
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-b
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ─────────────────────────────────────────────────────────────────
+  #  SECURITY GROUPS
+  # ─────────────────────────────────────────────────────────────────
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-ec2-sg
+      GroupDescription: SSH, FastAPI (8000), Streamlit (8501), MLflow (5000), Flask SBERT (5001)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+          Description: FastAPI (M3 Lab A)
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+          Description: Streamlit (M3 Lab E)
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+          Description: MLflow tracking UI (M3 Lab D)
+        - IpProtocol: tcp
+          FromPort: 5001
+          ToPort: 5001
+          CidrIp: 0.0.0.0/0
+          Description: Flask (future M4 branch)
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-ec2-sg
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-rds-sg
+      GroupDescription: PostgreSQL access from EC2 only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref Ec2SecurityGroup
+          Description: PostgreSQL from EC2 SG
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-rds-sg
+
+  # ─────────────────────────────────────────────────────────────────
+  #  EC2 KEY PAIR (private key auto-stored in SSM Parameter Store)
+  # ─────────────────────────────────────────────────────────────────
+  Ec2KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub ${ProjectName}-key
+      KeyType: rsa
+      KeyFormat: pem
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-key
+
+  # ─────────────────────────────────────────────────────────────────
+  #  S3 BUCKET — datasets + model artifacts + MLflow artifact store
+  # ─────────────────────────────────────────────────────────────────
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub ${ProjectName}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-data
+
+  # ─────────────────────────────────────────────────────────────────
+  #  RDS — Master password in Secrets Manager
+  # ─────────────────────────────────────────────────────────────────
+  RdsMasterPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${ProjectName}/rds-master-password
+      Description: !Sub Master password for ${ProjectName} RDS PostgreSQL
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${RdsMasterUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludeCharacters: '"@/\ '
+        ExcludePunctuation: true
+
+  RdsSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub ${ProjectName}-rds-subnet-group
+      DBSubnetGroupDescription: !Sub Subnet group for ${ProjectName} RDS
+      SubnetIds:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-rds-subnet-group
+
+  RdsInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub ${ProjectName}-rds
+      Engine: postgres
+      EngineVersion: !Ref RdsEngineVersion
+      DBInstanceClass: !Ref RdsInstanceClass
+      AllocatedStorage: !Ref RdsAllocatedStorage
+      StorageType: gp2
+      DBName: !Ref RdsDatabaseName
+      MasterUsername: !Ref RdsMasterUsername
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${RdsMasterPasswordSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref RdsSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RdsSecurityGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 0
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+      MultiAZ: false
+      Port: 5432
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-rds
+
+  # ─────────────────────────────────────────────────────────────────
+  #  EC2 INSTANCE — user-data installs Python 3.12, Docker, AWS CLI, MLflow
+  # ─────────────────────────────────────────────────────────────────
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - PublicRoute
+      - RdsInstance
+    Properties:
+      ImageId: !Ref LatestUbuntuAmiId
+      InstanceType: !Ref Ec2InstanceType
+      KeyName: !Ref Ec2KeyPair
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref Ec2SecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref Ec2VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/m3-bootstrap.log 2>&1
+
+          echo "==> Updating apt..."
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y software-properties-common curl unzip
+
+          echo "==> Installing Python 3.12..."
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -y
+          apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip postgresql-client
+
+          echo "==> Installing AWS CLI v2..."
+          curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+          unzip -q /tmp/awscli.zip -d /tmp
+          /tmp/aws/install
+
+          echo "==> Installing Docker..."
+          apt-get install -y docker.io
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          echo "==> Installing MLflow..."
+          python3.12 -m venv /opt/mlflow-venv
+          /opt/mlflow-venv/bin/pip install --quiet mlflow boto3 psycopg2-binary
+
+          echo "==> Creating MLflow systemd service..."
+          cat > /etc/systemd/system/mlflow.service <<SVC
+          [Unit]
+          Description=MLflow Tracking Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          WorkingDirectory=/home/ubuntu
+          ExecStart=/opt/mlflow-venv/bin/mlflow server \
+            --host 0.0.0.0 --port 5000 \
+            --backend-store-uri sqlite:///home/ubuntu/mlflow.db \
+            --default-artifact-root s3://${DataBucket}/mlflow-artifacts
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+          SVC
+          systemctl daemon-reload
+          systemctl enable mlflow
+          systemctl start mlflow
+
+          echo "==> Preparing /opt/m3 for loader script (SCPed in by deploy_m3.sh later)..."
+          mkdir -p /opt/m3
+
+          echo "==> Fetching RDS password from Secrets Manager..."
+          RDS_PASSWORD=$(aws secretsmanager get-secret-value \
+            --region ${AWS::Region} \
+            --secret-id "${RdsMasterPasswordSecret}" \
+            --query SecretString --output text \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')
+
+          echo "==> Writing config.json for loader script..."
+          cat > /opt/m3/config.json <<CFGEOF
+          {
+            "region": "${AWS::Region}",
+            "s3_bucket": "${DataBucket}",
+            "rds_host": "${RdsInstance.Endpoint.Address}",
+            "rds_port": "5432",
+            "rds_db": "${RdsDatabaseName}",
+            "rds_user": "${RdsMasterUsername}",
+            "rds_password": "$RDS_PASSWORD"
+          }
+          CFGEOF
+          chown -R ubuntu:ubuntu /opt/m3
+
+          echo "==> Installing Python deps for loader..."
+          pip3 install --quiet psycopg2-binary boto3
+
+          touch /var/log/m3-bootstrap-complete
+          echo "==> Bootstrap complete."
+
+  # ─────────────────────────────────────────────────────────────────
+  #  SAGEMAKER EXECUTION IAM ROLE
+  # ─────────────────────────────────────────────────────────────────
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-sagemaker-role
+      Description: Execution role for SageMaker notebook instances in this M3 environment
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+        - PolicyName: VpcAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                Resource: '*'
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RdsMasterPasswordSecret
+
+  # ─────────────────────────────────────────────────────────────────
+  #  OPTIONAL — Billing alert (only created if AlertEmail is set + region is us-east-1)
+  # ─────────────────────────────────────────────────────────────────
+  BillingAlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: CreateBillingAlarm
+    Properties:
+      TopicName: !Sub ${ProjectName}-billing-alerts
+      DisplayName: !Sub ${ProjectName} billing alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
+  BillingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateBillingAlarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-billing-${BillingAlertThresholdUsd}usd
+      AlarmDescription: !Sub Billing exceeded $${BillingAlertThresholdUsd} USD for ${ProjectName}
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      Statistic: Maximum
+      Period: 21600     # 6 hours
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingAlertThresholdUsd
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref BillingAlertTopic
+
+
+# =====================================================================
+#  OUTPUTS — connection details for instructor / students
+# =====================================================================
+Outputs:
+
+  VpcId:
+    Description: VPC ID
+    Value: !Ref Vpc
+
+  Ec2PublicIp:
+    Description: EC2 public IPv4 (changes on stop/start)
+    Value: !GetAtt Ec2Instance.PublicIp
+
+  Ec2PublicDns:
+    Description: EC2 public DNS (stable across stop/start)
+    Value: !GetAtt Ec2Instance.PublicDnsName
+
+  Ec2KeyPairName:
+    Description: EC2 key pair name (private key in SSM Parameter Store)
+    Value: !Ref Ec2KeyPair
+
+  Ec2KeyPairSsmPath:
+    Description: SSM Parameter Store path holding the EC2 private key
+    Value: !Sub /ec2/keypair/${Ec2KeyPair.KeyPairId}
+
+  GetKeyCommand:
+    Description: Copy-paste command to download the EC2 private key
+    Value: !Sub |
+      aws ssm get-parameter --name /ec2/keypair/${Ec2KeyPair.KeyPairId} --with-decryption --region ${AWS::Region} --query Parameter.Value --output text > ${ProjectName}-key.pem && chmod 400 ${ProjectName}-key.pem
+
+  SshCommand:
+    Description: Ready-to-use SSH command (after running GetKeyCommand)
+    Value: !Sub ssh -i ${ProjectName}-key.pem ubuntu@${Ec2Instance.PublicDnsName}
+
+  RdsEndpoint:
+    Description: RDS PostgreSQL hostname
+    Value: !GetAtt RdsInstance.Endpoint.Address
+
+  RdsPort:
+    Description: RDS PostgreSQL port
+    Value: !GetAtt RdsInstance.Endpoint.Port
+
+  RdsDatabaseName:
+    Description: Initial PostgreSQL database name
+    Value: !Ref RdsDatabaseName
+
+  RdsMasterUsername:
+    Description: RDS master username
+    Value: !Ref RdsMasterUsername
+
+  RdsMasterPasswordSecretArn:
+    Description: Secrets Manager ARN holding RDS master password
+    Value: !Ref RdsMasterPasswordSecret
+
+  GetRdsPasswordCommand:
+    Description: Copy-paste command to retrieve the RDS master password
+    Value: !Sub |
+      aws secretsmanager get-secret-value --secret-id ${RdsMasterPasswordSecret} --region ${AWS::Region} --query SecretString --output text | python -c "import json,sys; print(json.load(sys.stdin)['password'])"
+
+  S3BucketName:
+    Description: S3 bucket for datasets + model artifacts + MLflow store
+    Value: !Ref DataBucket
+
+  CsvUploadCommand:
+    Description: Copy-paste command to upload the 7 Truck Delay CSVs from local AWS_setup/data/ folder
+    Value: !Sub |
+      aws s3 sync ./data s3://${DataBucket}/data/raw/ --region ${AWS::Region} --exclude "*.md"
+
+  LoadCsvsCommand:
+    Description: Copy-paste command to load CSVs into RDS (run AFTER CsvUploadCommand and after EC2 bootstrap completes)
+    Value: !Sub |
+      ssh -i ${ProjectName}-key.pem ubuntu@${Ec2Instance.PublicDnsName} "python3 /opt/m3/load_csvs.py"
+
+  SageMakerRoleArn:
+    Description: IAM role ARN for SageMaker notebook instances
+    Value: !GetAtt SageMakerExecutionRole.Arn
+
+  MlflowUiUrl:
+    Description: MLflow tracking UI (open in browser after EC2 bootstrap completes ~5 min)
+    Value: !Sub http://${Ec2Instance.PublicIp}:5000

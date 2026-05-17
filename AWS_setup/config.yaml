@@ -1,0 +1,121 @@
+# =====================================================================
+#  Module 3 — AWS Environment Configuration (SINGLE SOURCE OF TRUTH)
+# =====================================================================
+#
+#  Edit THIS file. Don't edit m3_setup.yaml, deploy_m3.sh, verify_ec2.py,
+#  or verify_s3.py — they all read from this config.
+#
+#  Files that read this:
+#    - deploy_m3.sh          (passes values to CloudFormation as
+#                             --parameter-overrides)
+#    - verify_ec2.py         (uses stack_name + aws_region)
+#    - verify_s3.py          (uses stack_name + aws_region)
+#
+#  Files that do NOT read this (and don't need to):
+#    - m3_setup.yaml         (a CloudFormation template — its Parameters
+#                             section has fallback defaults; deploy_m3.sh
+#                             overrides them at deploy time)
+#    - load_csvs.py          (runs on EC2; reads /opt/m3/config.json which
+#                             is written by CloudFormation UserData with
+#                             runtime values like the actual RDS endpoint
+#                             and the Secrets-Manager-fetched password)
+#    - verify_rds.py         (runs on EC2; same — reads /opt/m3/config.json)
+#
+# =====================================================================
+
+
+# ── Stack identity ─────────────────────────────────────────────────
+#
+# project_name:  Unique prefix for ALL resources. Must be different for
+#                every learner if you share an AWS account. S3 bucket
+#                names are globally unique across AWS accounts, so make
+#                this distinctive. Format: lowercase letters, digits,
+#                hyphens only. 3-31 chars. Must start with a letter.
+#
+# stack_name:    Name of the CloudFormation stack. Independent of
+#                project_name. Used by deploy_m3.sh and verify_*.py
+#                to locate the stack.
+#
+# aws_region:    Region for ALL resources. Pick the closest to you.
+#                India: ap-south-1   |   US East: us-east-1
+#                EU West: eu-west-1  |   Asia Pacific: ap-southeast-1
+project_name: mlops-m3-batch-2026
+stack_name: m3-stack
+aws_region: ap-south-1
+
+
+# ── Alerts (optional) ──────────────────────────────────────────────
+#
+# alert_email:                Email address that gets SNS subscription
+#                             confirmation + billing alarm notifications.
+#                             Leave as empty string '' to skip SNS setup.
+#                             Subscription must be confirmed via the email
+#                             AWS sends after deployment.
+#
+# billing_alert_threshold_usd: Trigger SNS when monthly spend exceeds this.
+#                              ONLY effective if aws_region == 'us-east-1'
+#                              (CloudWatch billing metrics are us-east-1 only).
+alert_email: you@example.com
+billing_alert_threshold_usd: 10
+
+
+# ── EC2 ────────────────────────────────────────────────────────────
+#
+# ec2_instance_type:  t3.medium recommended (2 vCPU, 4 GB RAM, ~$0.04/hr).
+#                     t3.micro (1 GB RAM) OOMs during MLflow + numpy/pandas
+#                     install. Don't downgrade unless you really need Free Tier.
+#                     Allowed: t2.micro, t2.small, t2.medium, t3.micro,
+#                              t3.small, t3.medium
+#
+# ec2_volume_size_gb: Root EBS volume size in GB. Min 8, max 100.
+#                     Free Tier allows up to 30 GB.
+#
+# allowed_ssh_cidr:   IP range that can SSH to the EC2.
+#                     '0.0.0.0/0' = open to internet (fine for class).
+#                     For tighter security, set to '<your-IP>/32' (find at
+#                     https://checkip.amazonaws.com then append /32).
+ec2_instance_type: t3.medium
+ec2_volume_size_gb: 20
+allowed_ssh_cidr: 0.0.0.0/0
+
+
+# ── RDS ────────────────────────────────────────────────────────────
+#
+# rds_instance_class:     db.t3.small recommended (2 vCPU, 2 GB RAM, ~$0.036/hr).
+#                         db.t3.micro (1 GB RAM) is tight for the 2.6M-row
+#                         traffic_table COPY and EDA queries in Labs C/D.
+#                         Allowed: db.t3.micro, db.t3.small, db.t4g.micro,
+#                                  db.t4g.small
+#
+# rds_allocated_storage_gb: Storage in GB. Min 20, max 100. Free Tier = 20 GB.
+#
+# rds_engine_version:     PostgreSQL version. Availability varies by region.
+#                         Check: aws rds describe-db-engine-versions
+#                                --engine postgres --region <region>
+#                         Common: '15.10', '15.16', '15.17', '15.18', '16.6'
+#                         Note: must be a STRING (in quotes) — YAML would
+#                         otherwise treat 15.10 as a number.
+#
+# rds_database_name:      Initial database name created by RDS. The 7
+#                         Truck Delay tables get loaded into this.
+#                         Allowed: starts with letter, alphanumeric + underscore.
+#
+# rds_master_username:    Master DB user. Password is auto-generated by
+#                         CloudFormation and stored in Secrets Manager —
+#                         NEVER hardcoded here, NEVER in any file.
+#                         Allowed: starts with letter, alphanumeric + underscore.
+rds_instance_class: db.t3.small
+rds_allocated_storage_gb: 20
+rds_engine_version: '15.10'
+rds_database_name: truck_delay_db
+rds_master_username: mlops_admin
+
+
+# ── Script-level (not CloudFormation) ──────────────────────────────
+#
+# bootstrap_timeout_sec: Max time deploy_m3.sh waits for EC2 UserData
+#                        bootstrap (Python + Docker + MLflow install) to
+#                        finish. On t3.medium typically completes in 3-8 min.
+#                        Increase to 1800 (30 min) if you forced t3.micro
+#                        (expect OOM though).
+bootstrap_timeout_sec: 900

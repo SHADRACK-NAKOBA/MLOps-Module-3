@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------
+#  MLOps Module 3 — .gitignore
+# ---------------------------------------------------------------
+
+# ----- Secrets: never commit private keys -----
+*.pem
+*.ppk
+*.p12
+*.key
+
+# ----- Python -----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+*.egg-info/
+
+# ----- Lab artifacts generated at runtime -----
+# (Boto3 helper scripts in labs/M3_LabB_Manual_Provisioning/ write this file
+#  with real AWS resource IDs — keep it local, never commit.)
+outputs.json
+
+# ----- OS / IDE junk -----
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
+.vscode/
+.idea/
+*.swp
+*~
+.OneDrive*
