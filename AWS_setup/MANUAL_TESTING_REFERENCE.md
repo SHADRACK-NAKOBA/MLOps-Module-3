@@ -119,12 +119,12 @@ with open("/opt/m3/config.json") as f:
 
 EXPECTED_COUNTS = {
     "truck_schedule_table": 12_308,
-    "trucks_table": 1_301,
-    "drivers_table": 1_301,
-    "routes_table": 2_353,
-    "traffic_table": 2_597_914,
-    "city_weather": 55_177,
-    "routes_weather": 425_713,
+    "trucks_table": 1_300,
+    "drivers_table": 1_300,
+    "routes_table": 2_352,
+    "traffic_table": 2_597_913,
+    "city_weather": 55_176,
+    "routes_weather": 425_712,
 }
 
 conn = psycopg2.connect(
@@ -169,12 +169,12 @@ Expected output:
 Table                             Actual   Expected
 =======================================================
 truck_schedule_table              12,308     12,308  OK
-trucks_table                       1,301      1,301  OK
-drivers_table                      1,301      1,301  OK
-routes_table                       2,353      2,353  OK
-traffic_table                  2,597,914  2,597,914  OK
-city_weather                      55,177     55,177  OK
-routes_weather                   425,713    425,713  OK
+trucks_table                       1,300      1,300  OK
+drivers_table                      1,300      1,300  OK
+routes_table                       2,352      2,352  OK
+traffic_table                  2,597,913  2,597,913  OK
+city_weather                      55,176     55,176  OK
+routes_weather                   425,712    425,712  OK
 =======================================================
 
 Sample join (schedule + trucks):

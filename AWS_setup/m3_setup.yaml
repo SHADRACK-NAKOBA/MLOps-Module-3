@@ -2,9 +2,10 @@ AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
   Module 3 — First Cloud Deployment + Cloud ML Development.
-  Provisions: VPC + subnets, EC2 (with Python 3.12, Docker, AWS CLI, MLflow auto-installed),
-  RDS PostgreSQL 15 (truck_delay_db pre-created), S3 bucket, SageMaker IAM role,
-  EC2 key pair (private key in SSM Parameter Store), RDS master password in Secrets Manager.
+  Provisions: VPC + subnets, EC2 with IAM instance profile (Python 3.12, Docker,
+  AWS CLI, MLflow auto-installed via UserData), RDS PostgreSQL 15 (truck_delay_db
+  pre-created), S3 bucket, SageMaker IAM role, RDS master password in Secrets Manager.
+  EC2 key pair is created OUTSIDE this template by deploy_m3.sh and passed in as Ec2KeyPairName.
 
 # =====================================================================
 #  PARAMETERS — change these BEFORE deployment (see AWS_SETUP_README.md)
@@ -12,6 +13,14 @@ Description: >
 Parameters:
 
   # ── Identity ──
+  Ec2KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: >
+      Name of the EC2 key pair to use for SSH access. Created by deploy_m3.sh
+      via `aws ec2 create-key-pair` BEFORE this stack is deployed. The script
+      passes <ProjectName>-key as the value. See the comment block where
+      Ec2KeyPair used to live for the full rationale.
+
   ProjectName:
     Type: String
     Default: mlops-m3-batch-2026
@@ -278,17 +287,23 @@ Resources:
           Value: !Sub ${ProjectName}-rds-sg
 
   # ─────────────────────────────────────────────────────────────────
-  #  EC2 KEY PAIR (private key auto-stored in SSM Parameter Store)
+  #  (EC2 KEY PAIR — created OUTSIDE CloudFormation, by deploy_m3.sh)
+  #
+  #  Why not AWS::EC2::KeyPair? The CFN-managed flavor was supposed to
+  #  auto-store the generated private key in SSM Parameter Store at
+  #  /ec2/keypair/<key-pair-id> for ssm:GetParameter retrieval.
+  #  In practice (May 2026, ap-south-1 with AdministratorAccess), that
+  #  SSM parameter exists in describe-parameters but `get-parameter`
+  #  returns ParameterNotFound — the namespace is service-owned by EC2
+  #  and not readable by the stack creator.
+  #
+  #  Workaround: deploy_m3.sh runs `aws ec2 create-key-pair` BEFORE this
+  #  template is deployed, captures the private key (returned in the
+  #  CreateKeyPair API response — guaranteed retrieval, no SSM hop),
+  #  saves it locally as <ProjectName>-key.pem, and passes the key name
+  #  as the Ec2KeyPairName parameter below. CloudFormation just references
+  #  the existing key by name when launching the EC2 instance.
   # ─────────────────────────────────────────────────────────────────
-  Ec2KeyPair:
-    Type: AWS::EC2::KeyPair
-    Properties:
-      KeyName: !Sub ${ProjectName}-key
-      KeyType: rsa
-      KeyFormat: pem
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-key
 
   # ─────────────────────────────────────────────────────────────────
   #  S3 BUCKET — datasets + model artifacts + MLflow artifact store
@@ -367,6 +382,51 @@ Resources:
   # ─────────────────────────────────────────────────────────────────
   #  EC2 INSTANCE — user-data installs Python 3.12, Docker, AWS CLI, MLflow
   # ─────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────
+  #  EC2 INSTANCE PROFILE — lets the EC2 call AWS APIs without keys.
+  #  UserData needs SecretsManager:GetSecretValue (to fetch the RDS
+  #  password) and S3 read on the data bucket (so load_csvs.py can
+  #  stream the 7 CSVs). Without this profile, the bootstrap fails at
+  #  "aws secretsmanager get-secret-value" with NoCredentials.
+  # ─────────────────────────────────────────────────────────────────
+  Ec2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-ec2-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GetRdsSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RdsMasterPasswordSecret
+        - PolicyName: ReadDataBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${DataBucket}
+                  - !Sub arn:aws:s3:::${DataBucket}/*
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${ProjectName}-ec2-instance-profile
+      Roles:
+        - !Ref Ec2InstanceRole
+
   Ec2Instance:
     Type: AWS::EC2::Instance
     DependsOn:
@@ -375,10 +435,11 @@ Resources:
     Properties:
       ImageId: !Ref LatestUbuntuAmiId
       InstanceType: !Ref Ec2InstanceType
-      KeyName: !Ref Ec2KeyPair
+      KeyName: !Ref Ec2KeyPairName
       SubnetId: !Ref PublicSubnetA
       SecurityGroupIds:
         - !Ref Ec2SecurityGroup
+      IamInstanceProfile: !Ref Ec2InstanceProfile
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
@@ -402,7 +463,10 @@ Resources:
           echo "==> Installing Python 3.12..."
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update -y
-          apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip postgresql-client
+          # python3-psycopg2 + python3-boto3 come from the Ubuntu archive (PEP 668-safe).
+          # pip-installing them on Ubuntu 24.04 system Python is blocked by EXTERNALLY-MANAGED.
+          apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip postgresql-client \
+                             python3-psycopg2 python3-boto3
 
           echo "==> Installing AWS CLI v2..."
           curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
@@ -429,10 +493,17 @@ Resources:
           Type=simple
           User=ubuntu
           WorkingDirectory=/home/ubuntu
+          # --allowed-hosts '*' and --cors-allowed-origins '*' disable
+          # MLflow 3.x's built-in DNS-rebinding protection. The teaching env
+          # is destroyed every session and lives at a fresh public IP, so
+          # students would otherwise get HTTP 403 when opening the MLflow UI
+          # from a browser. For production, restrict these to specific hosts.
           ExecStart=/opt/mlflow-venv/bin/mlflow server \
             --host 0.0.0.0 --port 5000 \
             --backend-store-uri sqlite:///home/ubuntu/mlflow.db \
-            --default-artifact-root s3://${DataBucket}/mlflow-artifacts
+            --default-artifact-root s3://${DataBucket}/mlflow-artifacts \
+            --allowed-hosts '*' \
+            --cors-allowed-origins '*'
           Restart=on-failure
 
           [Install]
@@ -466,8 +537,8 @@ Resources:
           CFGEOF
           chown -R ubuntu:ubuntu /opt/m3
 
-          echo "==> Installing Python deps for loader..."
-          pip3 install --quiet psycopg2-binary boto3
+          # (psycopg2 + boto3 already installed via apt above — Ubuntu 24.04 PEP 668 friendly.
+          # pip3 install psycopg2-binary boto3 would fail with externally-managed-environment.)
 
           touch /var/log/m3-bootstrap-complete
           echo "==> Bootstrap complete."
@@ -563,21 +634,16 @@ Outputs:
     Value: !GetAtt Ec2Instance.PublicDnsName
 
   Ec2KeyPairName:
-    Description: EC2 key pair name (private key in SSM Parameter Store)
-    Value: !Ref Ec2KeyPair
+    Description: EC2 key pair name (private key was saved locally by deploy_m3.sh as <name>.pem)
+    Value: !Ref Ec2KeyPairName
 
-  Ec2KeyPairSsmPath:
-    Description: SSM Parameter Store path holding the EC2 private key
-    Value: !Sub /ec2/keypair/${Ec2KeyPair.KeyPairId}
-
-  GetKeyCommand:
-    Description: Copy-paste command to download the EC2 private key
-    Value: !Sub |
-      aws ssm get-parameter --name /ec2/keypair/${Ec2KeyPair.KeyPairId} --with-decryption --region ${AWS::Region} --query Parameter.Value --output text > ${ProjectName}-key.pem && chmod 400 ${ProjectName}-key.pem
+  PemFileLocation:
+    Description: Where the .pem private key lives on the deploying machine
+    Value: !Sub ${Ec2KeyPairName}.pem (in the same folder as deploy_m3.sh)
 
   SshCommand:
-    Description: Ready-to-use SSH command (after running GetKeyCommand)
-    Value: !Sub ssh -i ${ProjectName}-key.pem ubuntu@${Ec2Instance.PublicDnsName}
+    Description: Ready-to-use SSH command (the .pem already exists locally)
+    Value: !Sub ssh -i ${Ec2KeyPairName}.pem ubuntu@${Ec2Instance.PublicDnsName}
 
   RdsEndpoint:
     Description: RDS PostgreSQL hostname

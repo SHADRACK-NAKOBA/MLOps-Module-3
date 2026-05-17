@@ -28,12 +28,12 @@ CONFIG_PATH = "/opt/m3/config.json"
 
 EXPECTED_ROW_COUNTS = {
     "truck_schedule_table": 12_308,
-    "trucks_table": 1_301,
-    "drivers_table": 1_301,
-    "routes_table": 2_353,
-    "traffic_table": 2_597_914,
-    "city_weather": 55_177,
-    "routes_weather": 425_713,
+    "trucks_table": 1_300,
+    "drivers_table": 1_300,
+    "routes_table": 2_352,
+    "traffic_table": 2_597_913,
+    "city_weather": 55_176,
+    "routes_weather": 425_712,
 }
 
 

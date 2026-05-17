@@ -35,7 +35,7 @@ TABLES = {
         "mileage_mpg INT", "fuel_type VARCHAR(20)",
     ],
     "drivers_table": [
-        "driver_id INT", "name VARCHAR(50)", "gender VARCHAR(10)", "age INT",
+        "driver_id VARCHAR(20)", "name VARCHAR(50)", "gender VARCHAR(10)", "age INT",
         "experience INT", "driving_style VARCHAR(20)", "ratings INT",
         "vehicle_no INT", "average_speed_mph FLOAT",
     ],
@@ -45,7 +45,7 @@ TABLES = {
     ],
     "traffic_table": [
         "route_id VARCHAR(20)", "date DATE", "hour INT",
-        "no_of_vehicles INT", "accident INT",
+        "no_of_vehicles FLOAT", "accident INT",
     ],
     "city_weather": [
         "city_id VARCHAR(20)", "date DATE", "hour INT", "temp FLOAT",

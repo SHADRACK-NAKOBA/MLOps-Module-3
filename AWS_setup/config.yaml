@@ -55,7 +55,7 @@ aws_region: ap-south-1
 # billing_alert_threshold_usd: Trigger SNS when monthly spend exceeds this.
 #                              ONLY effective if aws_region == 'us-east-1'
 #                              (CloudWatch billing metrics are us-east-1 only).
-alert_email: you@example.com
+alert_email: prashant9501@gmail.com
 billing_alert_threshold_usd: 10
 
 

@@ -239,12 +239,12 @@ Takes 3–5 minutes (`traffic_table.csv` has 2.6M rows). Expected output:
 
 ```
 Loading truck_schedule_table...   →   12,308 rows
-Loading trucks_table...           →    1,301 rows
-Loading drivers_table...          →    1,301 rows
-Loading routes_table...           →    2,353 rows
-Loading traffic_table...          → 2,597,914 rows
-Loading city_weather...           →   55,177 rows
-Loading routes_weather...         →  425,713 rows
+Loading trucks_table...           →    1,300 rows
+Loading drivers_table...          →    1,300 rows
+Loading routes_table...           →    2,352 rows
+Loading traffic_table...          → 2,597,913 rows
+Loading city_weather...           →   55,176 rows
+Loading routes_weather...         →  425,712 rows
 
 All 7 tables loaded successfully.
 ```

@@ -35,7 +35,11 @@
 #              If a previous run left a ROLLBACK_COMPLETE stack, Step 0 offers to
 #              delete it first.
 #      Step 2  Always re-reads outputs (cheap).
-#      Step 3  Skips download if the .pem already exists locally.
+#      Step 3  No-op verification — the .pem was already created BEFORE
+#              Step 1 by the new pre-CFN keypair-creation block. If the
+#              local .pem exists, the AWS key pair is reused; if missing
+#              and the AWS key pair exists, the script aborts (since the
+#              private key would be unrecoverable from AWS).
 #      Step 4  `aws s3 sync` skips files already in S3 with matching size+mtime.
 #      Step 5  MLflow poll returns immediately if the UI is already up.
 #      Step 6  SCP overwrites; `load_csvs.py` does DROP TABLE IF EXISTS so the
@@ -215,14 +219,55 @@ if [[ -z "$LATEST_UBUNTU_AMI" || "$LATEST_UBUNTU_AMI" == "None" ]]; then
 fi
 ok "Ubuntu 24.04 LTS AMI: $LATEST_UBUNTU_AMI"
 
+# ---- Create the EC2 key pair OUTSIDE CloudFormation ----
+# We do this BEFORE the CFN deploy because:
+#   - `aws ec2 create-key-pair` returns the private key in the response —
+#     guaranteed retrieval, no SSM Parameter Store dependency.
+#   - The CFN-managed AWS::EC2::KeyPair stores the private key in SSM at
+#     /ec2/keypair/<key-pair-id>, but in practice ssm:GetParameter against
+#     that path returns ParameterNotFound (service-owned namespace).
+#   - We then pass the key NAME to CFN as a parameter; CFN just references
+#     the existing key when launching the EC2.
+KEY_NAME="${PROJECT_NAME}-key"
+PEM_FILE="${KEY_NAME}.pem"
+
+say "Creating EC2 key pair '$KEY_NAME' (or reusing if .pem already exists)"
+if [[ -f "$PEM_FILE" ]] && [[ -s "$PEM_FILE" ]]; then
+  # Local .pem present — verify the AWS key pair still exists and matches
+  if aws ec2 describe-key-pairs --key-names "$KEY_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+    ok "Local $PEM_FILE exists and AWS key pair '$KEY_NAME' is still there — reusing"
+  else
+    die "Found $PEM_FILE locally but AWS key pair '$KEY_NAME' is GONE.
+          Delete $PEM_FILE locally and re-run; this will create a fresh keypair."
+  fi
+else
+  # No local .pem — create a fresh key pair
+  if aws ec2 describe-key-pairs --key-names "$KEY_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+    die "AWS key pair '$KEY_NAME' EXISTS in AWS but you have no local $PEM_FILE.
+          The private key from that key pair is unrecoverable. Either:
+            - aws ec2 delete-key-pair --key-name $KEY_NAME --region $AWS_REGION
+              (then re-run this script — it will create a fresh one)
+            - OR locate the existing $PEM_FILE somewhere on disk and copy it here."
+  fi
+  aws ec2 create-key-pair \
+      --key-name "$KEY_NAME" \
+      --key-type rsa \
+      --key-format pem \
+      --query KeyMaterial --output text \
+      --region "$AWS_REGION" > "$PEM_FILE"
+  # chmod 400 — works on Linux/Mac/Git-Bash; on native Windows it's a no-op
+  chmod 400 "$PEM_FILE" 2>/dev/null || true
+  ok "Created key pair '$KEY_NAME' and saved private key to $PEM_FILE"
+fi
+
 say "Step 1/7 — Deploying CloudFormation stack '$STACK_NAME' (~5 min)"
-# Pass ALL parameters from config.yaml to CloudFormation. LatestUbuntuAmiId is
-# auto-resolved above (NOT in config.yaml — it's region-specific and time-sensitive,
-# so re-resolving per deploy is the right behaviour).
+# Pass ALL parameters from config.yaml + the auto-resolved Ubuntu AMI + the
+# externally-created key pair name to CloudFormation.
 aws cloudformation deploy \
   --template-file m3_setup.yaml \
   --stack-name "$STACK_NAME" \
   --parameter-overrides \
+    Ec2KeyPairName="$KEY_NAME" \
     ProjectName="$CFG_PROJECT_NAME" \
     AllowedSshCidr="${CFG_ALLOWED_SSH_CIDR:-0.0.0.0/0}" \
     Ec2InstanceType="$CFG_EC2_INSTANCE_TYPE" \
@@ -246,7 +291,6 @@ say "Step 2/7 — Reading stack outputs"
 EC2_IP=$(get_output Ec2PublicIp)
 EC2_DNS=$(get_output Ec2PublicDns)
 S3_BUCKET=$(get_output S3BucketName)
-SSM_PATH=$(get_output Ec2KeyPairSsmPath)
 RDS_HOST=$(get_output RdsEndpoint)
 SECRET_ARN=$(get_output RdsMasterPasswordSecretArn)
 MLFLOW_URL=$(get_output MlflowUiUrl)
@@ -259,23 +303,12 @@ note "S3 bucket:      $S3_BUCKET"
 note "MLflow URL:     $MLFLOW_URL"
 
 # =====================================================================
-#  STEP 3 — Download EC2 private key from SSM
+#  STEP 3 — Verify EC2 private key (already created pre-Step 1)
 # =====================================================================
-say "Step 3/7 — Downloading EC2 private key → $PEM_FILE"
-if [[ -f "$PEM_FILE" ]] && [[ -s "$PEM_FILE" ]]; then
-  ok "$PEM_FILE already exists, skipping (delete it manually if you want a fresh copy)"
-else
-  aws ssm get-parameter \
-    --name "$SSM_PATH" \
-    --with-decryption \
-    --region "$AWS_REGION" \
-    --query Parameter.Value \
-    --output text > "$PEM_FILE"
-
-  # On Git Bash, chmod 400 works. On native Windows it's a no-op (icacls covers it).
-  chmod 400 "$PEM_FILE" 2>/dev/null || true
-  ok ".pem downloaded and locked (chmod 400)"
-fi
+say "Step 3/7 — Confirming EC2 private key $PEM_FILE is ready"
+[[ -f "$PEM_FILE" ]] && [[ -s "$PEM_FILE" ]] \
+    || die "$PEM_FILE missing — it should have been created before Step 1. Bug."
+ok ".pem exists locally ($(wc -c <"$PEM_FILE") bytes) — SSH-ready"
 
 # =====================================================================
 #  STEP 4 — Upload Truck Delay CSVs to S3

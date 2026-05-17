@@ -5,12 +5,12 @@ This folder must contain **exactly these 7 CSV files** before you run `deploy_m3
 | File | Expected Size | Rows |
 |------|---------------|------|
 | `truck_schedule_table.csv` | ~870 KB | 12,308 |
-| `trucks_table.csv` | ~35 KB | 1,301 |
-| `drivers_table.csv` | ~82 KB | 1,301 |
-| `routes_table.csv` | ~107 KB | 2,353 |
-| `traffic_table.csv` | ~87 MB | 2,597,914 |
-| `city_weather.csv` | ~3.4 MB | 55,177 |
-| `routes_weather.csv` | ~28 MB | 425,713 |
+| `trucks_table.csv` | ~35 KB | 1,300 |
+| `drivers_table.csv` | ~82 KB | 1,300 |
+| `routes_table.csv` | ~107 KB | 2,352 |
+| `traffic_table.csv` | ~87 MB | 2,597,913 |
+| `city_weather.csv` | ~3.4 MB | 55,176 |
+| `routes_weather.csv` | ~28 MB | 425,712 |
 
 **Total:** ~120 MB across the 7 files.
 
