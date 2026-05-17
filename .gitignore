@@ -18,6 +18,12 @@ env/
 .ipynb_checkpoints/
 *.egg-info/
 
+# ----- Instructor-only material (NOT for student-facing repo) -----
+# The Manual Provisioning goldmine contains boto3 helpers + a step-by-step
+# Manual_AWS_Provisioning.md doc that walks instructors through how to
+# build the AWS environment from scratch. Kept local, not shipped to learners.
+labs/M3_LabB_Manual_Provisioning/
+
 # ----- Lab artifacts generated at runtime -----
 # (Boto3 helper scripts in labs/M3_LabB_Manual_Provisioning/ write this file
 #  with real AWS resource IDs — keep it local, never commit.)
