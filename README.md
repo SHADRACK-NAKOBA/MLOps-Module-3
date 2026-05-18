@@ -386,6 +386,41 @@ Everything you build in M3 becomes the foundation for the next 5 modules. The da
 
 ---
 
+## Connecting to the Shared Lab Infrastructure
+
+For this cohort, the instructor hosts the shared M3 environment (RDS, S3, MLflow on EC2). You do **not** need to deploy your own copy — just connect to the instructor's. Your instructor will share the four endpoints below at the start of class:
+
+| What | Why you need it | How you'll use it |
+|---|---|---|
+| **RDS read-only connection string** — host, port, db name, `mlops_student` user, password | Source of all 7 Truck Delay tables (Labs C, D, E) | `psycopg2.connect(...)` or `pd.read_sql(...)` from your notebook |
+| **MLflow tracking server URL** — `http://<EC2_IP>:5000` | Log experiments, register the best model (Lab D) | `mlflow.set_tracking_uri(...)` at top of training notebook |
+| **S3 bucket name** for shared artifacts | Read pre-built artifacts the instructor may share (e.g. `final_features.csv`); write your own model artifacts there if your instructor enables it | `boto3.client("s3")` or `pd.read_csv("s3://...")` |
+| **SageMaker IAM role ARN** (only if you're sharing the instructor's AWS account) | Attach when creating your SageMaker Notebook Instance | Paste into the IAM role field on the Console |
+
+The RDS user `mlops_student` has **read-only** access — `SELECT` on every table in `public`, no `INSERT/UPDATE/DELETE/CREATE/DROP`. You can't accidentally corrupt the shared data. Bring your own scratch space (your local laptop / your own AWS account) for writes.
+
+Connection snippet you can paste at the top of any notebook:
+
+```python
+import psycopg2, pandas as pd
+
+DB_CONFIG = {
+    "host":     "<from your instructor>",
+    "port":     5432,
+    "dbname":   "truck_delay_db",
+    "user":     "mlops_student",
+    "password": "<from your instructor>",
+}
+
+conn = psycopg2.connect(**DB_CONFIG)
+df = pd.read_sql("SELECT * FROM trucks_table LIMIT 10", conn)
+print(df.head())
+```
+
+> **Keep the read-only credentials inside the cohort.** Don't paste them into a public GitHub repo, Stack Overflow question, or screen share recording. The cred is meant for your batch only — the instructor rotates it between cohorts.
+
+---
+
 ## Before You Start (Prerequisites)
 
 You should already have:
@@ -393,18 +428,23 @@ You should already have:
 - ✅ `.venv` virtual environment workflow (from M1)
 - ✅ Git + GitHub account (from M1)
 - ✅ A working M2 Real Estate FastAPI project (your own, locally)
-- ✅ AWS account (with billing alerts set)
-- ✅ AWS CLI configured (`aws configure` works; `aws sts get-caller-identity` returns your account)
 - ✅ DBeaver Community Edition installed
 - ✅ VS Code with Python + Jupyter extensions
+- ✅ `pip install psycopg2-binary sqlalchemy pandas boto3 mlflow scikit-learn xgboost streamlit` in your venv
 
-Your instructor will share at the start of class:
-- AWS Console URL + your IAM credentials (if using a shared training account)
-- EC2 public IP + SSH `.pem` key (for connecting to MLflow / running Streamlit)
-- RDS endpoint + database credentials (via Secrets Manager / handout)
-- S3 bucket name
-- SageMaker IAM role ARN
-- MLflow UI URL
+AWS-account setup depends on your cohort's path:
+
+| Path | What you need | Who does it |
+|---|---|---|
+| **A — Use instructor's shared AWS account (default)** | An IAM user in the instructor's account (provided), plus the read-only RDS creds shown above | Instructor pre-provisions; you get a handout |
+| **B — Deploy your own M3 stack** | Your own AWS account with billing alerts, AWS CLI configured (`aws configure`), and the M3 CloudFormation template (`AWS_setup/m3_setup.yaml` in this repo) | You run `./AWS_setup/deploy_m3.sh` once — takes ~15 min |
+
+Path A is faster (no infra setup); Path B teaches you the deployment side too. Both end with the same hands-on Labs C / D / E.
+
+What the instructor shares regardless of path:
+- The four endpoints in the **Connecting to the Shared Lab Infrastructure** table above
+- AWS Console URL + your IAM credentials (Path A only)
+- EC2 SSH `.pem` key (only if your lab requires SSH-ing into the MLflow server)
 
 ---
 
