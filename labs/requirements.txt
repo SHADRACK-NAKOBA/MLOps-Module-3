@@ -1,0 +1,12 @@
+streamlit
+pandas
+scikit-learn
+xgboost
+seaborn
+matplotlib
+psycopg2-binary
+sqlalchemy
+boto3
+mlflow
+joblib
+mlflow
