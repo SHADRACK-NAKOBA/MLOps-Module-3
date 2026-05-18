@@ -42,7 +42,7 @@ Your job in Module 3: build the first cloud-deployed version of this model, with
 | B | **Spine Setup — RDS + S3** | Tier 2 demo (instructor shows; you watch) | 30 min | Instructor demos the pre-provisioned RDS PostgreSQL database (with 7 tables loaded) and the S3 bucket. |
 | C | **EDA + Feature Engineering** | Tier 3 hands-on (you do it) | 90 min | Jupyter notebook. Connect to RDS, explore the 7 tables, engineer 36 features, save `final_features.csv` to S3. |
 | D | **Model Training + MLflow** | Tier 3 hands-on (you do it) | 90 min | Train 3 models (Logistic Regression, Random Forest, XGBoost), log everything to MLflow on EC2, register the best model. |
-| E | **Streamlit Dashboard + Batch Scoring** | Tier 3 hands-on (you do it) | 60 min | Build an interactive Streamlit dashboard for predictions; run a batch scoring script that writes results back to RDS. |
+| E | **Streamlit Dashboard + Batch Scoring** | Tier 3 hands-on (you do it) | 60 min | Build an interactive Streamlit dashboard for predictions; run a batch scoring script that writes results back to RDS. **Code distributed separately by instructor** — not in this repo while it stabilises. |
 
 Labs A and B are **demonstrations only**. The AWS infrastructure has already been provisioned for you (using a CloudFormation template — your instructor will walk you through the YAML). You connect to it; you don't set it up.
 

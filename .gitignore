@@ -23,6 +23,14 @@ env/
 # Manual_AWS_Provisioning.md doc that walks instructors through how to
 # build the AWS environment from scratch. Kept local, not shipped to learners.
 labs/M3_LabB_Manual_Provisioning/
+labs/M3_Manual_Provisionin_AWS_Resources/
+
+# Lab E Streamlit dashboard — work-in-progress; distributed separately to
+# students. Both the old name (M3_LabE_Streamlit_Batch) and the new name
+# (M3_Lab_D_Streamlit_Batch) are ignored so neither can accidentally land
+# on the public repo.
+labs/M3_LabE_Streamlit_Batch/
+labs/M3_Lab_D_Streamlit_Batch/
 
 # ----- Lab artifacts generated at runtime -----
 # (Boto3 helper scripts in labs/M3_LabB_Manual_Provisioning/ write this file
