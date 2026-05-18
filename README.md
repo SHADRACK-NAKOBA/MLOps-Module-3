@@ -361,7 +361,7 @@ The right order is **schedule → trucks → drivers → routes → aggregated t
 | **AWS RDS PostgreSQL 15** | Stores all 7 dataset tables | Cloud (provisioned for you) |
 | **AWS S3** | Datasets, model artifacts, MLflow artifact store | Cloud (provisioned for you) |
 | **AWS SageMaker Notebook** | Where you run Labs C and D | Cloud (you create one with the pre-made IAM role) |
-| **MLflow** | Experiment tracking + Model Registry | Self-hosted on EC2 (already running) |
+| **MLflow** | Experiment tracking + Model Registry | Runs **locally inside your SageMaker notebook** (sqlite backend). See "Where MLflow runs for you" above. |
 | **DBeaver** | SQL client for browsing RDS | Your laptop |
 | **psycopg2 / SQLAlchemy** | Python DB drivers | Inside your notebooks |
 | **scikit-learn** | Logistic Regression, Random Forest, encoders, scalers, metrics | Inside your notebooks |
@@ -388,16 +388,14 @@ Everything you build in M3 becomes the foundation for the next 5 modules. The da
 
 ## Connecting to the Shared Lab Infrastructure
 
-For this cohort, the instructor hosts the shared M3 environment (RDS, S3, MLflow on EC2). You do **not** need to deploy your own copy — just connect to the instructor's. Your instructor will share the four endpoints below at the start of class:
+For this cohort, the instructor hosts the shared **RDS database** with the 7 Truck Delay tables. You do **not** need to deploy your own copy of the database — just connect to the instructor's, read-only. Your instructor will hand out the connection string at the start of class.
 
 | What | Why you need it | How you'll use it |
 |---|---|---|
 | **RDS read-only connection string** — host, port, db name, `mlops_student` user, password | Source of all 7 Truck Delay tables (Labs C, D, E) | `psycopg2.connect(...)` or `pd.read_sql(...)` from your notebook |
-| **MLflow tracking server URL** — `http://<EC2_IP>:5000` | Log experiments, register the best model (Lab D) | `mlflow.set_tracking_uri(...)` at top of training notebook |
-| **S3 bucket name** for shared artifacts | Read pre-built artifacts the instructor may share (e.g. `final_features.csv`); write your own model artifacts there if your instructor enables it | `boto3.client("s3")` or `pd.read_csv("s3://...")` |
 | **SageMaker IAM role ARN** (only if you're sharing the instructor's AWS account) | Attach when creating your SageMaker Notebook Instance | Paste into the IAM role field on the Console |
 
-The RDS user `mlops_student` has **read-only** access — `SELECT` on every table in `public`, no `INSERT/UPDATE/DELETE/CREATE/DROP`. You can't accidentally corrupt the shared data. Bring your own scratch space (your local laptop / your own AWS account) for writes.
+The RDS user `mlops_student` has **read-only** access — `SELECT` on every table in `public`, no `INSERT/UPDATE/DELETE/CREATE/DROP`. You can't accidentally corrupt the shared data. Bring your own scratch space (your SageMaker notebook's local filesystem) for writes.
 
 Connection snippet you can paste at the top of any notebook:
 
@@ -418,6 +416,47 @@ print(df.head())
 ```
 
 > **Keep the read-only credentials inside the cohort.** Don't paste them into a public GitHub repo, Stack Overflow question, or screen share recording. The cred is meant for your batch only — the instructor rotates it between cohorts.
+
+### Where MLflow runs for you (Lab D)
+
+You'll run **your own MLflow inside your SageMaker notebook** — not against the instructor's shared MLflow. Each student is isolated; runs and artifacts stay on your notebook's EBS volume.
+
+In your Lab D notebook, at the top:
+
+```python
+import mlflow
+
+# Local sqlite backend — runs + artifacts persist on the SageMaker notebook's
+# EBS volume across stop/start. Wiped when you delete the notebook.
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+mlflow.set_experiment("truck-delay-classification")
+
+with mlflow.start_run(run_name="xgboost-baseline"):
+    mlflow.log_params(params)
+    mlflow.log_metrics({"f1": f1_score, "roc_auc": roc_auc})
+    mlflow.sklearn.log_model(model, "model")
+```
+
+**To open the MLflow UI** — open a terminal in JupyterLab (`File → New → Terminal`) and run:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+```
+
+Then visit it via your SageMaker notebook's port-forward proxy:
+
+```
+https://<your-notebook-name>.notebook.<region>.sagemaker.aws/proxy/5000/
+```
+
+**Don't want to mess with the UI?** Compare runs directly inside the notebook with `mlflow.search_runs()` — returns a pandas DataFrame you can sort by metric:
+
+```python
+runs = mlflow.search_runs(experiment_names=["truck-delay-classification"])
+runs[["run_id", "params.model_type", "metrics.f1", "metrics.roc_auc"]].sort_values("metrics.f1", ascending=False)
+```
+
+**Why local MLflow instead of the instructor's?** Each student gets isolated runs (no log mixing), full artifact write permissions (`mlflow.log_model()` works), and no dependency on the instructor's EC2 staying up. The trade-off is no live cross-cohort leaderboard — but that's not what this lab needs.
 
 ---
 
@@ -453,7 +492,7 @@ What the instructor shares regardless of path:
 | Problem | First Try |
 |---------|-----------|
 | Can't connect to RDS | Check you're in the right AWS region (ap-south-1). Check DBeaver SSH tunnel is on. |
-| MLflow UI won't load | Verify EC2 IP. Check port 5000 is in security group. Curl from EC2: `curl localhost:5000` |
+| MLflow UI won't load | Make sure `mlflow ui --port 5000` is running in a JupyterLab terminal on the same notebook, then hit it via the SageMaker proxy URL `https://<notebook>.notebook.<region>.sagemaker.aws/proxy/5000/` |
 | `psycopg2` install fails | Use `psycopg2-binary` instead of `psycopg2` |
 | SageMaker notebook IAM error | Confirm the notebook instance has the `<project>-sagemaker-role` attached |
 | `final_features.csv` shape isn't ~(12308, 37) | Recount rows after each merge — likely a join order or aggregation issue |
