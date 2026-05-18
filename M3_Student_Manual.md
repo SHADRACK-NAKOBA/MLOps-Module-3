@@ -311,7 +311,7 @@ You'll see your 3 training runs + 1 final-test run + (if you ran `verify_mlflow.
 
 **Format:** Hands-on Python project (multiple `.py` files + `requirements.txt`). ~60 min.
 
-**Folder:** `labs/M3_Lab_D_Streamlit_Batch/` (distributed separately by your instructor — see "Where the code comes from" below)
+**Folder:** [`labs/M3_Lab_D_Streamlit_Batch/`](labs/M3_Lab_D_Streamlit_Batch/) (in this repo)
 
 ### What is it?
 
@@ -335,24 +335,20 @@ A trained model that lives in an S3 bucket isn't doing any work for the business
 - **Scheduled batch scoring** so predictions are pre-computed and ready when ops staff log in each morning (faster than predicting on demand)
 - **A real production pattern** — Streamlit on EC2 + batch job on cron is a perfectly reasonable v1 architecture for many small ML systems. In M4/M5 you'll replace EC2 with Docker → ECS → ALB, but the *shape* of the application (dashboard + batch job) stays the same.
 
-### Where the code comes from
-
-The Lab D folder (`M3_Lab_D_Streamlit_Batch/`) is **not in the public repo** — it's still being refined and is distributed separately by your instructor (via course platform / shared drive / direct copy).
-
-Once you receive the folder, drop it into `labs/M3_Lab_D_Streamlit_Batch/` inside your local clone of this repo. The `.gitignore` already excludes it, so you won't accidentally commit it back.
-
-Folder contents (when you receive it):
+### What's in the folder
 
 ```
 M3_Lab_D_Streamlit_Batch/
-├── app.py                  # Streamlit dashboard entry point
-├── batch_score.py          # Scheduled scoring script
-├── utils.py                # DB connection, model loader, prediction pipeline
-├── config.py               # Env-var configuration
-├── requirements.txt        # streamlit, pandas, sqlalchemy, psycopg2-binary, boto3, joblib, etc.
-├── run_live.sh             # Launcher for "running on your laptop with SSH tunnel" pattern
-└── _launch_on_ec2.sh       # Launcher for "running on the EC2 itself" pattern
+├── app.py                  # Streamlit dashboard entry point — 3 tabs: by Date, by Truck, by Route
+├── batch_score.py          # Scheduled scoring script (cron-friendly; idempotent)
+├── utils.py                # Shared helpers: SQLAlchemy engine, S3 model loader, prediction pipeline
+├── config.py               # Env-var-driven settings (all the AWS endpoints + DB credentials)
+├── requirements.txt        # streamlit, pandas, sqlalchemy, psycopg2-binary, boto3, joblib, scikit-learn, xgboost
+├── run_live.sh             # Launcher: laptop + SSH tunnel to RDS (option B below)
+└── _launch_on_ec2.sh       # Launcher: run directly on the EC2 (option A below — recommended)
 ```
+
+Both `app.py` and `batch_score.py` share `utils.py` (DB engine, S3 model loader, prediction pipeline) and `config.py` (env-var-driven settings). One source of truth for connection logic; both surfaces use it.
 
 ### Settings required to run
 

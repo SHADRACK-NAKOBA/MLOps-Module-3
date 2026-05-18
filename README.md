@@ -32,7 +32,13 @@ This repo contains everything you need to deploy the AWS environment for Module 
     ├── M3_Lab_B_EDA_Feature_Engineering.ipynb      Hands-on: 7 raw tables → 12,308 × 37 feature matrix
     ├── M3_Lab_C_Model_Training_MLflow.ipynb        Hands-on: LR + RF + XGBoost with full MLflow tracking
     └── M3_Lab_D_Streamlit_Batch/                   Hands-on: dashboard + batch scorer
-                                                     (distributed separately by your instructor)
+        ├── app.py                                   Streamlit UI (interactive predictions)
+        ├── batch_score.py                           Scheduled batch scoring (cron-friendly)
+        ├── utils.py                                 DB engine + model loader + prediction pipeline
+        ├── config.py                                env-var-driven settings
+        ├── requirements.txt                         pip dependencies
+        ├── run_live.sh                              launcher: laptop + SSH tunnel to RDS
+        └── _launch_on_ec2.sh                        launcher: run on the EC2 (port 8501 already open)
 ```
 
 ## Quick start (deployment)
@@ -64,7 +70,7 @@ The order matters. Each lab consumes the artifacts the previous one produced.
 | **A** | [Manual provisioning walkthrough](labs/M3_Lab_A_AWS_Provisioning_from_Console.md) | Read it; don't execute | Mental model of the cloud architecture |
 | **B** | [EDA + Feature Engineering notebook](labs/M3_Lab_B_EDA_Feature_Engineering.ipynb) | Local Jupyter / VS Code / SageMaker / Colab | `final_features.csv` (12,308 × 37) |
 | **C** | [Model Training + MLflow notebook](labs/M3_Lab_C_Model_Training_MLflow.ipynb) | Same as Lab B | XGBoost model + encoder + scaler + 4 MLflow runs |
-| **D** | Streamlit dashboard + batch scoring (folder distributed separately) | Best on the EC2 (port 8501 open) | Live UI at `http://<EC2_IP>:8501` + nightly cron predictions |
+| **D** | [Streamlit dashboard + batch scoring](labs/M3_Lab_D_Streamlit_Batch/) | Best on the EC2 (port 8501 open) | Live UI at `http://<EC2_IP>:8501` + nightly cron predictions |
 
 Full per-lab walkthrough is in **[M3_Student_Manual.md](M3_Student_Manual.md)**.
 
