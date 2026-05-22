@@ -238,7 +238,7 @@ You don't need to recreate the resources manually. Just read the doc, look at th
 8. **Temporal feature engineering** — `hour_of_day`, `day_of_week`, `is_midnight`
 9. **EDA** — correlation heatmap, delay rate by categorical features, distributions by class
 10. **Assemble final feature matrix** — 12,308 × 37 (36 features + target)
-11. **Save artifacts** — `final_features.csv` + `feature_metadata.json` to local disk, optionally to S3
+11. **Save artifacts** — `final_features.csv` + `feature_metadata.json` to local disk AND to S3 at `s3://<your-bucket>/data/processed/` (the S3 upload is wrapped in `try/except` so it never crashes the notebook — if your AWS creds aren't set up, you get the local copy only)
 
 ### How to run it
 
@@ -254,7 +254,7 @@ The notebook works on **any Python environment with the requirements installed**
 
 - `data/processed/final_features.csv` — 12,308 × 37 feature matrix
 - `data/processed/feature_metadata.json` — column lists for the next lab
-- (Optionally) the same files uploaded to `s3://<your-bucket>/data/processed/`
+- The same files uploaded to `s3://<your-bucket>/data/processed/` (so Lab C can fetch them from a different SageMaker notebook / laptop / EC2 without needing the local copy)
 
 Lab C reads these directly. Don't lose them between sessions.
 
