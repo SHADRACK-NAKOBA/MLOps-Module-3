@@ -36,6 +36,13 @@ labs/M3_Lab_D_Streamlit_Batch/
 #  with real AWS resource IDs — keep it local, never commit.)
 outputs.json
 
+# Streamlit / Lab E runtime logs
+labs/M3_Lab_E_Streamlit_Deployment/logs.log
+*.log
+
+# Scratch / experimental folders (local exploration, not for the public repo)
+labs/simple_streamlit_app/
+
 # ----- OS / IDE junk -----
 .DS_Store
 Thumbs.db

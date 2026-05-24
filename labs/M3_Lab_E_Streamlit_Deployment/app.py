@@ -402,7 +402,7 @@ def main():
     st.caption(
         "FreshBasket Logistics -- Truck Delay Prediction System  |  "
         "Module 3, Lab E -- Deployment using Streamlit  |  "
-        "Built by Priya & Arjun, MLOps Team, Pune"
+        "Built by Prashant, MLOps Team, Pune"
     )
 
 
