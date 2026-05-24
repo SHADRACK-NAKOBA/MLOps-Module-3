@@ -1,6 +1,6 @@
 """
 FreshBasket Truck Delay Prediction Dashboard
-Module 3, Lab E -- Streamlit Application
+Module 3, Lab E -- Deployment using Streamlit
 
 Priya's team at FreshBasket uses this dashboard to monitor predicted
 delivery delays across their truck fleet operating out of Pune.
@@ -9,11 +9,12 @@ Run
 ---
     streamlit run app.py --server.port 8501
 
-The app works in two modes:
-  1. Live mode  -- reads features from RDS and scores with the S3 model.
-  2. Demo mode  -- uses synthetic data so you can explore the UI without
-                   any AWS resources.  Activated automatically when S3 or
-                   RDS are unreachable, or by setting DEMO_MODE=true.
+The app works in three modes (priority order, auto-detected):
+  1. Lab D tuned model -- loaded from s3://<bucket>/models/truck-delay-tuned/
+     ONLY when its metadata confirms it beat Lab C's XGBoost baseline.
+  2. Lab C XGBoost     -- loaded from s3://<bucket>/models/{xgb,encoder,scaler}.pkl
+  3. Demo / heuristic  -- synthetic data and a hand-crafted scoring rule;
+     used when no AWS connectivity or model artifacts are reachable.
 """
 
 import matplotlib.pyplot as plt
@@ -33,16 +34,14 @@ from utils import (
 )
 
 
-def _score(df, model, encoder, scaler):
-    """Score a DataFrame: use the trained model if all artifacts are present,
-    otherwise fall back to the heuristic predictor on the same real features.
-    """
-    if model is not None and encoder is not None and scaler is not None:
-        return apply_prediction_pipeline(df, model, encoder, scaler)
+def _score(df, artifacts):
+    """Score a DataFrame with whichever bundle was loaded (or heuristic)."""
+    if artifacts is not None:
+        return apply_prediction_pipeline(df, artifacts)
     return apply_heuristic_predictions(df)
 
 
-# ── Page configuration (must be the first Streamlit call) ────────────
+# -- Page configuration (must be the first Streamlit call) ------------
 st.set_page_config(
     page_title="FreshBasket -- Truck Delay Predictions",
     page_icon="🚛",
@@ -56,7 +55,7 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner="Loading model artifacts ...")
 def cached_load_artifacts():
-    """Load model/encoder/scaler once and cache across reruns."""
+    """Load (artifacts_bundle, is_demo) once and cache across reruns."""
     return load_artifacts()
 
 
@@ -70,44 +69,66 @@ def cached_get_engine():
 # Sidebar
 # =====================================================================
 
-def render_sidebar(is_demo, no_trained_model=False):
-    """Render the sidebar with model metadata and instructions.
+def render_sidebar(artifacts, is_demo, rds_unreachable):
+    """Render the sidebar with model metadata + run-mode banner.
 
     Parameters
     ----------
-    is_demo : bool -- True if neither RDS nor model are available
-    no_trained_model : bool -- True if RDS works but Lab D model is missing
+    artifacts        : dict or None  -- bundle from load_artifacts()
+    is_demo          : bool           -- True when no real model is loaded
+    rds_unreachable  : bool           -- True when the DB engine is None
     """
     st.sidebar.title("Model Information")
 
-    if is_demo:
-        st.sidebar.warning("**DEMO MODE** — Using synthetic data.")
+    if is_demo and rds_unreachable:
+        st.sidebar.warning("**DEMO MODE** -- synthetic data + heuristic predictor.")
         st.sidebar.markdown(
-            "Connect to AWS (S3 + RDS) for live predictions. "
-            "Set `DEMO_MODE=false` and update `config.py` / env vars."
+            "Neither RDS nor model artifacts are reachable. Set DEMO_MODE=false "
+            "and update `config.py` / env vars to connect."
         )
-        st.sidebar.metric("Model", "Synthetic heuristic")
-        st.sidebar.metric("F1 Score (demo)", "N/A")
-    elif no_trained_model:
+        st.sidebar.metric("Data source", "Synthetic")
+        st.sidebar.metric("Predictor",   "Heuristic rule")
+    elif artifacts is None:
         st.sidebar.info("**LIVE RDS, heuristic predictions**")
         st.sidebar.markdown(
-            "Real truck/route data is being read from RDS. "
-            "Delay probabilities are computed by a hand-crafted scoring rule "
-            "(not the XGBoost model) because Lab D hasn't been run yet."
+            "Real truck/route data is being read from RDS. Delay probabilities "
+            "are computed by a hand-crafted scoring rule (Lab C / Lab D model "
+            "artifacts not found on S3)."
         )
         st.sidebar.metric("Data source", "RDS PostgreSQL")
-        st.sidebar.metric("Predictor", "Heuristic (no .pkl yet)")
+        st.sidebar.metric("Predictor",   "Heuristic (no .pkl)")
+    elif artifacts.get("kind") == "lab_d_tuned":
+        meta = artifacts.get("meta", {})
+        st.sidebar.success("**LIVE -- Lab D tuned model**")
+        st.sidebar.markdown(
+            f"Loaded from S3. This model **beat** Lab C's XGBoost on the "
+            f"held-out test set by `+{meta.get('delta_vs_baseline', 0):.4f}` F1."
+        )
+        st.sidebar.metric("Source",     "Lab D MLOps")
+        st.sidebar.metric("Algorithm",  meta.get("winner_model", "?"))
+        if isinstance(meta.get("test_f1"), (int, float)):
+            st.sidebar.metric("Test F1", f"{meta['test_f1']:.4f}")
+        if isinstance(meta.get("baseline_f1"), (int, float)):
+            st.sidebar.metric("vs baseline",
+                              f"+{meta.get('delta_vs_baseline', 0):.4f} F1")
+    elif artifacts.get("kind") == "lab_c_xgboost":
+        st.sidebar.success("**LIVE -- Lab C XGBoost baseline**")
+        st.sidebar.markdown(
+            "Loaded from S3. Lab D tuned model was either not run yet or did "
+            "not beat this baseline -- staying on the Lab C XGBoost."
+        )
+        st.sidebar.metric("Source",     "Lab C")
+        st.sidebar.metric("Algorithm",  "XGBoost Classifier")
+        st.sidebar.metric("Test F1",    "0.679")
     else:
-        st.sidebar.success("**LIVE MODE** — Connected to AWS.")
-        st.sidebar.metric("Model", MODEL_NAME)
-        st.sidebar.metric("Algorithm", "XGBoost Classifier")
-        st.sidebar.metric("F1 Score", "0.84")
+        st.sidebar.info("**LIVE -- unknown artifact bundle**")
+        st.sidebar.metric("Source", str(artifacts.get("kind")))
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(
         "**FreshBasket Logistics, Pune**  \n"
         "Built by Priya's MLOps team  \n"
-        "Module 3, Lab E"
+        "Module 3, Lab E -- Deployment using Streamlit"
     )
 
 
@@ -116,12 +137,7 @@ def render_sidebar(is_demo, no_trained_model=False):
 # =====================================================================
 
 def plot_delay_distribution(df):
-    """Show a histogram of predicted delay probabilities.
-
-    Parameters
-    ----------
-    df : pd.DataFrame -- must contain a 'delay_prob' column
-    """
+    """Show a histogram of predicted delay probabilities."""
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.hist(df["delay_prob"], bins=20, color="#2563EB", edgecolor="white", alpha=0.85)
     ax.set_xlabel("Delay Probability")
@@ -135,15 +151,7 @@ def plot_delay_distribution(df):
 
 
 def plot_feature_importance(df):
-    """Show a horizontal bar chart of top feature correlations with delay.
-
-    Uses simple absolute correlation with delay_prob as a proxy for
-    feature importance (works without access to the actual model object).
-
-    Parameters
-    ----------
-    df : pd.DataFrame -- scored data with 'delay_prob' column
-    """
+    """Show a horizontal bar chart of top feature correlations with delay."""
     numeric_cols = [c for c in CONTINUOUS_FEATURES if c in df.columns]
     if not numeric_cols or "delay_prob" not in df.columns:
         st.info("Feature importance not available for this selection.")
@@ -162,12 +170,7 @@ def plot_feature_importance(df):
 
 
 def plot_route_risk(df):
-    """Bar chart of average delay probability per route.
-
-    Parameters
-    ----------
-    df : pd.DataFrame -- must have 'route_description' and 'delay_prob'
-    """
+    """Bar chart of average delay probability per route."""
     if "route_description" not in df.columns:
         return
 
@@ -195,17 +198,11 @@ def plot_route_risk(df):
 # =====================================================================
 
 def display_results_table(df):
-    """Show the scored records as a colour-coded table.
-
-    Parameters
-    ----------
-    df : pd.DataFrame -- scored data with 'delay_prob' and 'delay_pred'
-    """
+    """Show the scored records as a colour-coded table."""
     if df.empty:
         st.info("No records found for this filter.")
         return
 
-    # Summary metrics row
     total = len(df)
     delayed = int(df["delay_pred"].sum())
     avg_prob = df["delay_prob"].mean()
@@ -216,18 +213,16 @@ def display_results_table(df):
     col3.metric("Delay Rate", f"{delayed / total:.1%}")
     col4.metric("Avg Delay Prob", f"{avg_prob:.2f}")
 
-    # Colour-coded risk column
     display_df = df.copy()
     display_df["Risk"] = display_df["delay_prob"].apply(
         lambda p: f"{get_risk_color(p)[0]} {get_risk_color(p)[1]}"
     )
     display_df["Delay %"] = (display_df["delay_prob"] * 100).round(1)
 
-    # Select columns for display
     show_cols = [
         c for c in [
             "truck_id", "route_id", "departure_date",
-            "origin_description", "destination_description",
+            "origin_description", "dest_description",
             "truck_age", "distance", "average_speed_mph",
             "Delay %", "Risk",
         ]
@@ -245,16 +240,9 @@ def display_results_table(df):
 # Tab renderers
 # =====================================================================
 
-def render_date_tab(engine, model, encoder, scaler, is_demo):
-    """Tab 1 -- filter predictions by departure date.
-
-    Parameters
-    ----------
-    engine, model, encoder, scaler -- pipeline components (may be None)
-    is_demo : bool
-    """
+def render_date_tab(engine, artifacts, is_demo):
+    """Tab 1 -- filter predictions by departure date."""
     st.subheader("Filter by Departure Date")
-    # Truck Delay data spans 2019. Default to a known-good date in that range.
     selected_date = st.date_input(
         "Select date (truck_schedule_table spans 2019)",
         value=pd.Timestamp("2019-01-01").date(),
@@ -270,7 +258,7 @@ def render_date_tab(engine, model, encoder, scaler, is_demo):
             else:
                 df = fetch_predictions_data(engine, "date", str(selected_date))
                 if df is not None and not df.empty:
-                    df = _score(df, model, encoder, scaler)
+                    df = _score(df, artifacts)
                 else:
                     st.warning("No records found for that date -- showing demo data.")
                     df = generate_demo_data(80)
@@ -286,16 +274,9 @@ def render_date_tab(engine, model, encoder, scaler, is_demo):
                 plot_route_risk(df)
 
 
-def render_truck_tab(engine, model, encoder, scaler, is_demo):
-    """Tab 2 -- look up a specific truck by ID.
-
-    Parameters
-    ----------
-    engine, model, encoder, scaler -- pipeline components (may be None)
-    is_demo : bool
-    """
+def render_truck_tab(engine, artifacts, is_demo):
+    """Tab 2 -- look up a specific truck by ID."""
     st.subheader("Look Up a Truck")
-    # Real truck IDs in our dataset are 8-digit integers (e.g. 30312694).
     truck_id = st.number_input(
         "Truck ID (e.g. 30312694)",
         min_value=10_000_000, max_value=99_999_999, value=30_312_694,
@@ -309,7 +290,7 @@ def render_truck_tab(engine, model, encoder, scaler, is_demo):
             else:
                 df = fetch_predictions_data(engine, "truck", str(truck_id))
                 if df is not None and not df.empty:
-                    df = _score(df, model, encoder, scaler)
+                    df = _score(df, artifacts)
                 else:
                     st.warning("No records for this truck -- showing demo data.")
                     df = generate_demo_data(30)
@@ -321,16 +302,9 @@ def render_truck_tab(engine, model, encoder, scaler, is_demo):
             plot_feature_importance(df)
 
 
-def render_route_tab(engine, model, encoder, scaler, is_demo):
-    """Tab 3 -- analyse delay patterns for a route.
-
-    Parameters
-    ----------
-    engine, model, encoder, scaler -- pipeline components (may be None)
-    is_demo : bool
-    """
+def render_route_tab(engine, artifacts, is_demo):
+    """Tab 3 -- analyse delay patterns for a route."""
     st.subheader("Analyse a Route")
-    # Real route IDs are strings like 'R-ada2a391', NOT integers.
     route_id = st.text_input(
         "Route ID (format: R-xxxxxxxx)",
         value="R-ada2a391",
@@ -344,7 +318,7 @@ def render_route_tab(engine, model, encoder, scaler, is_demo):
             else:
                 df = fetch_predictions_data(engine, "route", route_id)
                 if df is not None and not df.empty:
-                    df = _score(df, model, encoder, scaler)
+                    df = _score(df, artifacts)
                 else:
                     st.warning("No records for this route -- showing demo data.")
                     df = generate_demo_data(60)
@@ -367,42 +341,48 @@ def render_route_tab(engine, model, encoder, scaler, is_demo):
 def main():
     """Entry point -- assembles the full Streamlit dashboard."""
 
-    # ── Header ───────────────────────────────────────────────────────
     st.title("🚛 FreshBasket Truck Delay Prediction Dashboard")
     st.markdown(
         "*Predict delivery delays for FreshBasket's truck fleet "
         "operating across India  --  Pune HQ*"
     )
 
-    # ── Load artifacts & engine ──────────────────────────────────────
-    # load_artifacts() returns is_demo=True if model artifacts are missing.
-    # We override that: if RDS is reachable, we stay in LIVE mode and use a
-    # heuristic predictor on real data. Full demo mode triggers only if BOTH
-    # the DB AND the artifacts are missing (or DEMO_MODE=true explicitly).
-    model, encoder, scaler, _artifacts_missing = cached_load_artifacts()
+    # ── Load artifacts + engine ──────────────────────────────────────
+    # load_artifacts() returns (bundle, is_demo). The bundle is None when no
+    # real model could be loaded, in which case _score() falls back to the
+    # heuristic predictor (still using real RDS features when available).
+    artifacts, _artifacts_demo = cached_load_artifacts()
 
     engine = cached_get_engine()
-    is_demo = DEMO_MODE or (engine is None)
-    no_trained_model = _artifacts_missing or (model is None)
+    rds_unreachable = engine is None
+    is_demo = DEMO_MODE or rds_unreachable
 
     # ── Banner ───────────────────────────────────────────────────────
-    if is_demo:
+    if is_demo and artifacts is None:
         st.info(
-            "**Demo Mode** — RDS unreachable, the dashboard is rendering "
-            "synthetic data. Set DB_HOST/DB_PASSWORD env vars (see run_live.sh) "
-            "or DEMO_MODE=true."
+            "**Demo Mode** -- neither RDS nor model artifacts are reachable; "
+            "rendering synthetic data with a heuristic predictor."
         )
-    elif no_trained_model:
+    elif rds_unreachable:
         st.warning(
-            "**Live RDS, heuristic predictions** — model artifacts not found in "
-            "S3 yet (Lab D hasn't been run). Real truck/route data is being "
-            "loaded from RDS; delay probabilities come from a hand-crafted "
-            "scoring rule, not the XGBoost model. Once you run Lab D and "
-            "upload the .pkl files, predictions will use the trained model."
+            "**RDS unreachable** -- showing synthetic data. Set DB_HOST and "
+            "DB_PASSWORD env vars (see `run_live.sh`) or run on the EC2 itself."
+        )
+    elif artifacts is None:
+        st.warning(
+            "**Live RDS, heuristic predictions** -- model artifacts not found on "
+            "S3. Run Lab C (and optionally Lab D MLOps) to populate "
+            "`models/` in your bucket."
+        )
+    elif artifacts.get("kind") == "lab_d_tuned":
+        meta = artifacts.get("meta", {})
+        st.success(
+            f"**Live -- Lab D tuned model** ({meta.get('winner_model', '?')}). "
+            f"Test F1 = `{meta.get('test_f1', '?')}`, beating Lab C baseline "
+            f"by `+{meta.get('delta_vs_baseline', 0):.4f}`."
         )
 
-    # ── Sidebar ──────────────────────────────────────────────────────
-    render_sidebar(is_demo, no_trained_model=no_trained_model)
+    render_sidebar(artifacts, is_demo, rds_unreachable)
 
     # ── Tabs ─────────────────────────────────────────────────────────
     tab_date, tab_truck, tab_route = st.tabs([
@@ -410,23 +390,21 @@ def main():
     ])
 
     with tab_date:
-        render_date_tab(engine, model, encoder, scaler, is_demo)
+        render_date_tab(engine, artifacts, is_demo)
 
     with tab_truck:
-        render_truck_tab(engine, model, encoder, scaler, is_demo)
+        render_truck_tab(engine, artifacts, is_demo)
 
     with tab_route:
-        render_route_tab(engine, model, encoder, scaler, is_demo)
+        render_route_tab(engine, artifacts, is_demo)
 
-    # ── Footer ───────────────────────────────────────────────────────
     st.markdown("---")
     st.caption(
         "FreshBasket Logistics -- Truck Delay Prediction System  |  "
-        "Module 3, Lab E  |  "
+        "Module 3, Lab E -- Deployment using Streamlit  |  "
         "Built by Priya & Arjun, MLOps Team, Pune"
     )
 
 
-# ── Run ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()

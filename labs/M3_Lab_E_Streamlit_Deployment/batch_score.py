@@ -1,9 +1,13 @@
 """
 Batch Scoring Script -- Truck Delay Classification
-FreshBasket Logistics -- Module 3, Lab E
+FreshBasket Logistics -- Module 3, Lab E (Deployment using Streamlit)
 
-Scores all unscored truck-route-date combinations and writes
-predictions back to the 'predictions' table in RDS.
+Scores all unscored truck-route-date combinations and writes predictions
+back to the 'predictions' table in RDS. Uses the same three-tier artifact
+priority as app.py (see utils.load_artifacts):
+    1. Lab D tuned model (if it beat Lab C XGBoost on the test set)
+    2. Lab C XGBoost + encoder + scaler
+    3. Heuristic fallback
 
 Usage
 -----
@@ -16,10 +20,8 @@ and prints them to the console so students can see the pipeline shape
 without any AWS setup.
 """
 
-import sys
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -157,7 +159,17 @@ def run_batch_scoring():
 
     # ── Step 1: Load artifacts ───────────────────────────────────────
     print("[Step 1/5] Loading model artifacts ...")
-    model, encoder, scaler, is_demo = load_artifacts()
+    artifacts, is_demo = load_artifacts()
+
+    if artifacts is not None:
+        kind = artifacts.get("kind")
+        if kind == "lab_d_tuned":
+            meta = artifacts.get("meta", {})
+            print(f"  Using Lab D tuned model: {meta.get('winner_model', '?')} "
+                  f"(test F1 = {meta.get('test_f1', '?')})")
+        elif kind == "lab_c_xgboost":
+            print("  Using Lab C XGBoost baseline (Lab D tuned model unavailable "
+                  "or did not beat baseline).")
 
     if is_demo:
         print("  Running in DEMO MODE (no AWS connection).\n")
@@ -188,25 +200,10 @@ def run_batch_scoring():
         print(f"  Found {len(unscored_df)} unscored records.\n")
 
     # ── Step 4: Score ────────────────────────────────────────────────
+    # apply_prediction_pipeline auto-dispatches on artifacts['kind'] (Lab D
+    # tuned / Lab C XGBoost / heuristic when artifacts is None).
     print("[Step 4/5] Applying prediction pipeline ...")
-    if is_demo:
-        # In demo mode we use a lightweight heuristic instead of a model
-        rng = np.random.default_rng(99)
-        base = 0.25
-        prob = np.full(len(unscored_df), base)
-        prob += (unscored_df["truck_age"].values / 15) * 0.15
-        prob += (unscored_df["route_avg_precip"].values / 15) * 0.20
-        prob += unscored_df["accident"].values * 0.20
-        prob += unscored_df["is_midnight"].values * 0.10
-        prob -= (unscored_df["experience"].values / 25) * 0.10
-        prob = np.clip(prob + rng.normal(0, 0.05, len(unscored_df)), 0.02, 0.98)
-
-        scored_df = unscored_df.copy()
-        scored_df["delay_prob"] = prob.round(3)
-        scored_df["delay_pred"] = (scored_df["delay_prob"] >= 0.5).astype(int)
-    else:
-        scored_df = apply_prediction_pipeline(unscored_df, model, encoder, scaler)
-
+    scored_df = apply_prediction_pipeline(unscored_df, artifacts)
     print(f"  Scored {len(scored_df)} records.\n")
 
     # ── Step 5: Write results ────────────────────────────────────────

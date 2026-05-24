@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Launcher meant to run ON the EC2 instance. Pulls DB creds from
-# /opt/m3/config.json, sets env vars, kicks off streamlit in the background.
+# M3 Lab E (Deployment using Streamlit) -- launcher meant to run ON the EC2.
+# Pulls DB creds from /opt/m3/config.json, sets env vars, kicks off streamlit
+# in the background. Lab E auto-picks the best available model bundle:
+# Lab D tuned (if it beat the baseline) -> Lab C XGBoost -> heuristic.
 set -euo pipefail
 
 CFG=/opt/m3/config.json

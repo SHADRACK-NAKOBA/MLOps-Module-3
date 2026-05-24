@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  M3 Lab E — Run Streamlit dashboard against the live RDS + S3
+#  M3 Lab E (Deployment using Streamlit) — Run dashboard against live RDS + S3
+# =============================================================================
+#  Loads model artifacts from S3 with three-tier priority (utils.load_artifacts):
+#    1. Lab D tuned PyCaret pipeline (if it beat Lab C baseline)
+#    2. Lab C XGBoost + encoder + scaler
+#    3. Heuristic fallback (when neither is available)
 # =============================================================================
 #
 #  USAGE

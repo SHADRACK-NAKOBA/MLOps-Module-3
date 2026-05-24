@@ -6,6 +6,8 @@
 
 For a one-page repo overview see [README.md](README.md). For deployment-only details see [AWS_setup/AWS_SETUP_README.md](AWS_setup/AWS_SETUP_README.md). For ad-hoc DB / S3 testing snippets see [AWS_setup/MANUAL_TESTING_REFERENCE.md](AWS_setup/MANUAL_TESTING_REFERENCE.md).
 
+> **Joining at Module 4 (Docker)?** Read §1 and §3 below (~5 min) and the Lab E folder layout, then skip the rest of M3 and jump to `Module 4/`. M4 Labs 1, 2, 4 work in `DEMO_MODE=true` without any cloud deployment. M3 is a standalone module — there's no M1/M2 prerequisite. The Truck Delay project begins here in M3.
+
 ---
 
 ## Table of contents
@@ -19,11 +21,12 @@ For a one-page repo overview see [README.md](README.md). For deployment-only det
 7. [Lab A — Manual AWS Provisioning from Console (Tier-2 demo)](#7-lab-a--manual-aws-provisioning-from-console-tier-2-demo)
 8. [Lab B — EDA + Feature Engineering](#8-lab-b--eda--feature-engineering)
 9. [Lab C — Model Training + MLflow](#9-lab-c--model-training--mlflow)
-10. [Lab D — Streamlit Dashboard + Batch Scoring](#10-lab-d--streamlit-dashboard--batch-scoring)
-11. [The dataset — full reference](#11-the-dataset--full-reference)
-12. [Learning outcomes](#12-learning-outcomes)
-13. [Teardown — destroy everything](#13-teardown--destroy-everything)
-14. [Troubleshooting](#14-troubleshooting)
+10. [Lab D — MLOps: HP Tuning + Best-Model Selection](#10-lab-d--mlops-hp-tuning--best-model-selection)
+11. [Lab E — Deployment using Streamlit](#11-lab-e--deployment-using-streamlit)
+12. [The dataset — full reference](#12-the-dataset--full-reference)
+13. [Learning outcomes](#13-learning-outcomes)
+14. [Teardown — destroy everything](#14-teardown--destroy-everything)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -33,9 +36,10 @@ By the end of Module 3 you'll have:
 
 - A working AWS environment (VPC, EC2 with MLflow, RDS PostgreSQL, S3, IAM role) deployed in your own AWS account
 - A 12,308-row × 37-column feature matrix engineered from 7 raw tables
-- Three trained classifiers (Logistic Regression, Random Forest, XGBoost) with all experiments tracked in MLflow
+- Three trained classifiers (Logistic Regression, Random Forest, XGBoost) with all experiments tracked in MLflow — Lab C baseline at F1 ≈ 0.679
+- A second MLflow experiment (Lab D) with ~70 AutoML + hyperparameter-tuning runs that registers a new model version only when it genuinely beats the Lab C baseline
 - The best model registered in the MLflow Model Registry
-- An interactive Streamlit dashboard (Lab D) that lets ops staff query delay predictions live, plus a batch scoring pipeline that writes predictions back to your database on schedule
+- An interactive Streamlit dashboard (Lab E) that lets ops staff query delay predictions live, **auto-loading whichever artifact won** (Lab D tuned if better, else Lab C XGBoost), plus a batch scoring pipeline that writes predictions back to your database on schedule
 
 This is the start of the **spine project** that continues through M4–M8: in M4 you containerize the dashboard; in M5 you deploy it to ECS behind an ALB with CI/CD; in M6 you add drift detection; in M7 you swap features into Hopsworks; in M8 you orchestrate the whole thing with SageMaker Pipelines.
 
@@ -61,10 +65,13 @@ This is the start of the **spine project** that continues through M4–M8: in M4
 |---|---|---|---|---|
 | **A** | Manual AWS Provisioning from Console | Reference doc (read this once) | 30 min | Walks you through the AWS Console UI to create the M3 infrastructure manually. You don't have to do it manually — `deploy_m3.sh` does it for you — but reading the doc shows you what your CloudFormation template is *actually* creating, which is essential for understanding (and debugging) the cloud architecture. |
 | **B** | EDA + Feature Engineering | Hands-on Jupyter notebook | 90 min | Connect to your RDS, profile the 7 raw tables, merge them into one trip-level dataset (12,308 rows), engineer 36 features (weather, traffic, driver, vehicle), save to `final_features.csv`. |
-| **C** | Model Training + MLflow | Hands-on Jupyter notebook | 90 min | Train Logistic Regression, Random Forest, and XGBoost on `final_features.csv`. Log every run to MLflow with metrics, hyperparameters, confusion matrices, and feature-importance plots. Register the best model. |
-| **D** | Streamlit Dashboard + Batch Scoring | Hands-on Python project | 60 min | Build an interactive Streamlit app that loads the model and serves live predictions filtered by date / truck / route. Also a `batch_score.py` script that scores all unscored trips and writes predictions to a `predictions` table in RDS. |
+| **C** | Model Training + MLflow | Hands-on Jupyter notebook | 90 min | Train Logistic Regression, Random Forest, and XGBoost on `final_features.csv`. Log every run to MLflow with metrics, hyperparameters, confusion matrices, and feature-importance plots. Register the best model (F1 ≈ 0.679 baseline). |
+| **D** | MLOps — HP Tuning + Best-Model Selection | Hands-on Jupyter notebook (SageMaker) | 45 min | PyCaret AutoML sweeps ~15 classifiers; tune the top performer with a 50-iter randomized search; try blend + stack ensembles. Score the validation winner on Lab C's held-out test set **once**. If it beats F1 = 0.679, register a new version of `truck-delay-classifier`. ~70 MLflow runs in a separate experiment. |
+| **E** | Deployment using Streamlit | Hands-on Python project | 60 min | Build an interactive Streamlit app that loads the **best available** model (Lab D tuned if it beat the baseline, else Lab C XGBoost) and serves live predictions filtered by date / truck / route. Also a `batch_score.py` script that scores all unscored trips and writes predictions to a `predictions` table in RDS. |
 
-The deployment-via-`deploy_m3.sh` step happens **once** before any labs start. Total time including setup: ~5 hours of focused work, or 7 hours including instruction.
+The deployment-via-`deploy_m3.sh` step happens **once** before any labs start. Total time including setup: ~5–6 hours of focused work, or 7–8 hours including instruction.
+
+> **Looking for a quick walkthrough of Labs D and E specifically?** See [labs/M3_Labs_D_and_E_Guide.md](labs/M3_Labs_D_and_E_Guide.md) — what they are, how to run them, where to run them, and the operations (model promotion, registry, S3 paths).
 
 ---
 
@@ -307,15 +314,57 @@ You'll see your 3 training runs + 1 final-test run + (if you ran `verify_mlflow.
 
 ---
 
-## 10. Lab D — Streamlit Dashboard + Batch Scoring
+## 10. Lab D — MLOps: HP Tuning + Best-Model Selection
+
+**Format:** Hands-on Jupyter notebook
+**Duration:** ~45 min (first SageMaker run ~25 min for PyCaret install + sweep; subsequent runs ~15 min)
+**File:** [`labs/M3_Lab_D_MLOps_HP_Tuning.ipynb`](labs/M3_Lab_D_MLOps_HP_Tuning.ipynb)
+
+### What this lab is
+
+Lab C established a baseline (XGBoost F1 ≈ 0.679). Lab D asks: *can we do better with the same features?* It uses **PyCaret AutoML** to sweep ~15 classifiers, then **tunes the winner** with a 50-iteration randomized search, then tries **blend + stack ensembles**. The validation winner is scored on Lab C's held-out test set **once**. If it beats F1 = 0.679, Lab D registers a new version of `truck-delay-classifier` in the MLflow Model Registry — otherwise the Lab C baseline is preserved as the production model.
+
+### Why a separate experiment in MLflow
+
+Lab D logs to a **new** MLflow experiment called `truck-delay-hp-tuning` (Lab C uses `truck-delay-classification`). This keeps the ~70 tuning runs from cluttering the Lab C baseline view. The model **registry name stays the same** (`truck-delay-classifier`), so a successful tune simply bumps the version (v1 → v2). Lab E auto-picks the latest version in `Staging`.
+
+### Where to run
+
+**SageMaker Notebook Instance** is the recommended environment. The PyCaret install pulls a heavy dependency tree (XGBoost, LightGBM, CatBoost) — first-run install takes 3–5 minutes. After that PyCaret stays in the conda env. Local Jupyter also works if you don't mind the install size.
+
+### How to run
+
+1. Open the notebook on SageMaker (clone the repo with `git pull`).
+2. In **Cell 2**, set `MLFLOW_TRACKING_URI` to your EC2 IP and `S3_BUCKET` to your bucket name. The cell also defines the new experiment name (`truck-delay-hp-tuning`) — leave that as-is.
+3. Uncomment the `!pip install -q pycaret==3.3.2 optuna mlflow boto3` line in **Cell 1** on the first run.
+4. Run All. Expect ~15–25 minutes end-to-end.
+5. At the end, check the test-set F1 against the `BASELINE_F1 = 0.679` constant. If it beat the baseline, a new model version was registered automatically.
+
+### The discipline rule (very important)
+
+**The test set is touched exactly once.** After that score is reported, no more tuning. If the tuned model disappoints, we report the result honestly and keep the Lab C XGBoost in production. This is the same "compare → tune → finalize → honest-score → ship" pattern used in the Module 2 PyCaret benchmark.
+
+### Output artifacts (when the tuned model wins)
+
+```
+s3://<bucket>/models/truck-delay-tuned/tuned_pipeline.pkl   ← the PyCaret pipeline
+s3://<bucket>/models/truck-delay-tuned/tuned_metadata.json  ← winner_model, test_f1, delta_vs_baseline, ...
+MLflow registry: truck-delay-classifier v2 (Staging)
+```
+
+Lab E reads the metadata JSON to decide whether to load the tuned pipeline or fall back to Lab C XGBoost. See the [Labs D + E walkthrough](labs/M3_Labs_D_and_E_Guide.md) for the full operations flow.
+
+---
+
+## 11. Lab E — Deployment using Streamlit
 
 **Format:** Hands-on Python project (multiple `.py` files + `requirements.txt`). ~60 min.
 
-**Folder:** [`labs/M3_Lab_D_Streamlit_Batch/`](labs/M3_Lab_D_Streamlit_Batch/) (in this repo)
+**Folder:** [`labs/M3_Lab_E_Streamlit_Deployment/`](labs/M3_Lab_E_Streamlit_Deployment/) (in this repo)
 
 ### What is it?
 
-Lab D is the **end-of-M3 capstone**. It takes the trained model from Lab C and exposes it in two complementary ways:
+Lab E is the **end-of-M3 capstone**. It takes the trained model from Lab C and exposes it in two complementary ways:
 
 1. **`app.py`** — an **interactive Streamlit dashboard** for FreshBasket's operations team. Three tabs let them query the model's predictions by:
    - **Date** — "Show me all trips scheduled for Jan 15, 2019, ranked by delay risk"
@@ -329,7 +378,7 @@ The two share the same `utils.py` (DB connection, S3 model loader, prediction pi
 
 ### Why we need this
 
-A trained model that lives in an S3 bucket isn't doing any work for the business. Lab D is **where ML meets operations**:
+A trained model that lives in an S3 bucket isn't doing any work for the business. Lab E is **where ML meets operations**:
 
 - **Interactive UI** so non-engineers can query the model without writing code
 - **Scheduled batch scoring** so predictions are pre-computed and ready when ops staff log in each morning (faster than predicting on demand)
@@ -338,7 +387,7 @@ A trained model that lives in an S3 bucket isn't doing any work for the business
 ### What's in the folder
 
 ```
-M3_Lab_D_Streamlit_Batch/
+M3_Lab_E_Streamlit_Deployment/
 ├── app.py                  # Streamlit dashboard entry point — 3 tabs: by Date, by Truck, by Route
 ├── batch_score.py          # Scheduled scoring script (cron-friendly; idempotent)
 ├── utils.py                # Shared helpers: SQLAlchemy engine, S3 model loader, prediction pipeline
@@ -379,12 +428,12 @@ EC2_DNS=$(aws cloudformation describe-stacks --stack-name m3-stack --region <reg
     --query "Stacks[0].Outputs[?OutputKey=='Ec2PublicDns'].OutputValue" --output text)
 PEM=mlops-m3-<your-name>-2026-key.pem
 
-# Copy the Lab D folder + your trained model artifacts up to EC2
-scp -i $PEM -r ../labs/M3_Lab_D_Streamlit_Batch ubuntu@$EC2_DNS:~/
-scp -i $PEM ../labs/artifacts ubuntu@$EC2_DNS:~/M3_Lab_D_Streamlit_Batch/  # the .pkl files from Lab C
+# Copy the Lab E folder + your trained model artifacts up to EC2
+scp -i $PEM -r ../labs/M3_Lab_E_Streamlit_Deployment ubuntu@$EC2_DNS:~/
+scp -i $PEM ../labs/artifacts ubuntu@$EC2_DNS:~/M3_Lab_E_Streamlit_Deployment/  # the .pkl files from Lab C
 
 # Run the launcher on EC2
-ssh -i $PEM ubuntu@$EC2_DNS "bash ~/M3_Lab_D_Streamlit_Batch/_launch_on_ec2.sh"
+ssh -i $PEM ubuntu@$EC2_DNS "bash ~/M3_Lab_E_Streamlit_Deployment/_launch_on_ec2.sh"
 ```
 
 Open `http://<EC2_PublicIp>:8501` in your browser. The Streamlit dashboard renders, you select a date / truck / route, predictions appear.
@@ -400,7 +449,7 @@ ssh -i mlops-m3-<your-name>-2026-key.pem \
     -N ubuntu@ec2-...amazonaws.com
 
 # Terminal 2 — run Streamlit (set DB_HOST=localhost since the tunnel forwards 5432 locally)
-cd labs/M3_Lab_D_Streamlit_Batch
+cd labs/M3_Lab_E_Streamlit_Deployment
 DB_HOST=localhost ./run_live.sh
 ```
 
@@ -412,7 +461,7 @@ Why: SageMaker notebooks have direct access to RDS via the VPC (same as Lab B/C)
 
 ```bash
 # In a JupyterLab terminal inside your SageMaker notebook:
-cd /home/ec2-user/M3_Lab_D_Streamlit_Batch
+cd /home/ec2-user/M3_Lab_E_Streamlit_Deployment
 streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 ```
 
@@ -428,21 +477,21 @@ The Streamlit dashboard is interactive — designed for ops staff. The `batch_sc
 ```bash
 # Test it manually first (on the EC2):
 ssh -i $PEM ubuntu@$EC2_DNS
-cd ~/M3_Lab_D_Streamlit_Batch
+cd ~/M3_Lab_E_Streamlit_Deployment
 python batch_score.py
 
 # Set up a cron job to run every night at 2 AM:
-(crontab -l 2>/dev/null; echo "0 2 * * * cd ~/M3_Lab_D_Streamlit_Batch && python batch_score.py >> ~/batch.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 2 * * * cd ~/M3_Lab_E_Streamlit_Deployment && python batch_score.py >> ~/batch.log 2>&1") | crontab -
 ```
 
 It reads unscored rows from `truck_schedule_table`, applies the model, writes the results to a new `predictions` table. Idempotent — if a row was already scored, it skips it.
 
-### How Lab D connects to the rest of the project
+### How Lab E connects to the rest of the project
 
 ```
 Lab B  ──► final_features.csv (S3)
 Lab C  ──► xgboost_model.pkl + encoder.pkl + scaler.pkl (S3 + MLflow Model Registry)
-Lab D  ──► reads model from S3 (or MLflow)
+Lab E  ──► reads model from S3 (or MLflow)
         ──► reads live trip data from RDS
         ──► serves UI on port 8501
         ──► batch scorer writes predictions back to RDS
@@ -451,12 +500,12 @@ M4 (next module)   ──► containerize app.py with Docker, push to ECR
 M5                 ──► deploy the container to ECS with CI/CD
 M6                 ──► add drift detection on the batch scorer
 M7                 ──► swap S3 model loading for MLflow Registry "Production" stage
-M8                 ──► full SageMaker Pipeline orchestrates Lab C → Lab D end-to-end
+M8                 ──► full SageMaker Pipeline orchestrates Lab C → Lab E end-to-end
 ```
 
 ---
 
-## 11. The dataset — full reference
+## 12. The dataset — full reference
 
 The 7 raw tables live in your RDS PostgreSQL database `truck_delay_db`. The CSVs in `AWS_setup/data/` are the canonical source; `deploy_m3.sh` Step 6 loads them into RDS.
 
@@ -474,7 +523,7 @@ For column-level schemas + the ERD see Lab B's notebook (Section 3 walks through
 
 ---
 
-## 12. Learning outcomes
+## 13. Learning outcomes
 
 By the end of Module 3 you will be able to:
 
@@ -514,7 +563,7 @@ By the end of Module 3 you will be able to:
 
 ---
 
-## 13. Teardown — destroy everything
+## 14. Teardown — destroy everything
 
 **Forgetting to destroy is the #1 cost mistake.** Destroy the stack the moment class ends.
 
@@ -569,7 +618,7 @@ Check the AWS billing dashboard the next day to confirm no surprise charges.
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | First thing to try |
 |---|---|
