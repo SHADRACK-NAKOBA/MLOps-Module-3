@@ -40,8 +40,8 @@ outputs.json
 labs/M3_Lab_E_Streamlit_Deployment/logs.log
 *.log
 
-# Scratch / experimental folders (local exploration, not for the public repo)
-labs/simple_streamlit_app/
+# (labs/simple_streamlit_app/ was previously gitignored; now tracked — students
+#  use it as a self-contained "load these .pkl files and serve predictions" demo.)
 
 # ----- OS / IDE junk -----
 .DS_Store
