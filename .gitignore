@@ -53,3 +53,14 @@ desktop.ini
 *.swp
 *~
 .OneDrive*
+
+# --- Nakoba / session-specific secrets ---
+# *.pem and *.key already covered above; extras below:
+*-key.pem
+*.json.bak
+codepipeline-policy.json
+codebuild-trust-policy.json
+ecs-trust-policy.json
+/tmp/
+.env
+*.secret
